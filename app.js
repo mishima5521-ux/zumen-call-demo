@@ -661,6 +661,7 @@ function hangup(msg, notifyPeer = true) {
   if (S.quality !== 'std') setQuality('std');
   progress(null); banner(null);
   closeChat();
+  if (el.room.classList.contains('full')) setFullscreen(false);
   el.room.hidden = true;
   el.lobby.hidden = false;
   releaseMedia();
@@ -1958,6 +1959,18 @@ function updateToolbar() {
   $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && c.who !== S.role);
   $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && c.who === S.role);
 }
+// 全画面：上下のバーを隠し、映像（図面）だけを画面いっぱいに表示する
+function setFullscreen(on) {
+  if (on && S.content.type === 'none') showLive(S.role === 'host' ? 'guest' : 'host'); // 何も映していなければ相手のカメラ
+  el.room.classList.toggle('full', on);
+  $('#fullExitBtn').hidden = !on;
+  try {
+    if (on && !document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+    else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch { /* 全画面に対応していないブラウザは、バーを隠すだけ */ }
+  requestAnimationFrame(layout);
+}
+
 function gotoPage(d) {
   const c = S.content;
   if (c.type !== 'doc') return;
@@ -2004,6 +2017,9 @@ function setupToolbar() {
     send({ t: 'snap-req' });
     banner('相手のカメラで撮影しています…');
   });
+  $('#fullBtn').addEventListener('click', () => setFullscreen(!el.room.classList.contains('full')));
+  $('#fullExitBtn').addEventListener('click', () => setFullscreen(false));
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && el.room.classList.contains('full')) setFullscreen(false); });
   $('#wipeBtn').addEventListener('click', () => {
     delete el.remoteWipe.dataset.closed; delete el.selfWipe.dataset.closed;
     for (const w of [el.remoteWipe, el.selfWipe]) { w.style.left = w.style.top = w.style.right = w.style.bottom = w.style.width = ''; }
@@ -2047,6 +2063,8 @@ function setupToolbar() {
     else if (k === 'p' || k === 'P') setTool('pen');
     else if (k === 'e' || k === 'E') setTool('eraser');
     else if (k === 'm' || k === 'M') setTool('hand');
+    else if (k === 'f' || k === 'F') setFullscreen(!el.room.classList.contains('full'));
+    else if (k === 'Escape' && el.room.classList.contains('full')) setFullscreen(false);
   });
   // 自動再生が止められたときの保険
   document.addEventListener('click', () => {

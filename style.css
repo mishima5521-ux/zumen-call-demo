@@ -302,3 +302,12 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   .call-name { font-size: 26px; }
   .call-avatar { width: 96px; height: 96px; font-size: 42px; }
 }
+
+/* 全画面：上下のバーを隠して映像（図面）だけを表示 */
+#room.full .topbar, #room.full .toolbar { display: none; }
+.full-exit {
+  position: absolute; right: 12px; top: calc(12px + env(safe-area-inset-top)); z-index: 35;
+  min-height: 44px; padding: 6px 16px; border-radius: 22px; border: 1px solid rgba(255,255,255,.35);
+  background: rgba(0,0,0,.6); color: #fff; font-weight: 600;
+}
+#room.full #remoteWipe { top: 68px; }
