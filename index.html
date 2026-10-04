@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>図面テレビ電話（デモ）</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===== 待受画面 ===== -->
+<section id="lobby">
+  <div class="lobby-card">
+    <header class="lobby-head">
+      <h1>図面テレビ電話</h1>
+      <div class="me">
+        このPC：<b id="meName">未設定</b>
+        <button id="changeMeBtn" class="linkbtn" type="button">変更</button>
+        <span class="me-status"><span id="meDot" class="dot"></span> <span id="meStatus">準備中</span></span>
+      </div>
+      <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button></div>
+    </header>
+
+    <div id="setupBox" hidden>
+      <h2>このPCはどこで使いますか？</h2>
+      <p class="hint">選んだ名前で相手の一覧に表示されます。あとから「変更」で選び直せます。</p>
+      <div id="memberChoices" class="choices"></div>
+    </div>
+
+    <div id="standbyBox" hidden>
+      <div class="lobby-grid">
+        <div>
+          <h2>呼び出す相手</h2>
+          <ul id="contactList" class="contacts"></ul>
+        </div>
+        <div class="lobby-side">
+          <div class="lobby-preview">
+            <video id="lobbyVideo" muted autoplay playsinline></video>
+            <div id="lobbyNoCam" class="nocam">
+              <span>カメラは通話中だけ使います</span>
+              <button id="previewBtn" type="button" class="ghost">カメラを確認</button>
+            </div>
+          </div>
+          <label class="field"><span>カメラ</span><select id="lobbyCam"></select></label>
+          <label class="field"><span>マイク</span><select id="lobbyMic"></select></label>
+        </div>
+      </div>
+    </div>
+
+    <p id="lobbyMsg" class="msg" role="status"></p>
+    <p class="hint">この画面を開いたまま（最小化してもかまいません）にしておくと、相手からの呼び出しを受けられます。×で閉じると呼び出しを受けられません。</p>
+  </div>
+</section>
+
+<!-- ===== 着信・発信の画面 ===== -->
+<div id="callOverlay" class="overlay" hidden>
+  <div class="call-card">
+    <div id="callAvatar" class="call-avatar"></div>
+    <div id="callName" class="call-name"></div>
+    <div id="callStatus" class="call-status"></div>
+    <div class="call-actions">
+      <button id="answerBtn" class="answer" type="button">出る</button>
+      <button id="callbackBtn" class="callback" type="button"><span>出られない</span><small>折り返します</small></button>
+      <button id="cancelBtn" class="decline" type="button">取り消す</button>
+    </div>
+    <button id="declineBtn" class="decline-link" type="button">何も伝えずに拒否</button>
+    <p class="call-keys">キーボード：Enter＝出る　Esc＝折り返します</p>
+  </div>
+</div>
+
+<!-- ===== 通話中の画面 ===== -->
+<section id="room" hidden>
+  <header class="topbar">
+    <div class="tb-left">
+      <span id="connDot" class="dot"></span>
+      <span id="connText">準備中</span>
+    </div>
+    <div class="tb-right">
+      <span id="statsText" class="stats" title="受信＝相手から届いている映像 / 送信＝自分が送っている映像"></span>
+      <label class="q">送信画質
+        <select id="qualitySel">
+          <option value="std">標準（顔・動き優先）</option>
+          <option value="hi">高画質 1080p（製品向け）</option>
+          <option value="max">最高画質 4K（細部優先・動きは粗い）</option>
+        </select>
+      </label>
+      <button id="chatBtn" class="tbtn" title="通話相手とのチャット">チャット<span id="chatBtnBadge" class="badge" hidden>0</span></button>
+      <button id="micBtn" class="tbtn" title="マイク オン/オフ">マイク</button>
+      <button id="camBtn" class="tbtn" title="カメラ オン/オフ">カメラ</button>
+      <button id="settingsBtn" class="tbtn" title="カメラ・マイクの切替">設定</button>
+      <button id="leaveBtn" class="tbtn danger">通話を終了</button>
+    </div>
+  </header>
+
+  <main id="stage">
+    <canvas id="baseCanvas"></canvas>
+    <video id="stageVideo" muted autoplay playsinline></video>
+    <canvas id="inkCanvas"></canvas>
+    <canvas id="ptrCanvas"></canvas>
+
+    <div id="emptyHint">
+      <p><b>「図面を開く」</b>で PDF・画像を表示します（相手の画面にも表示されます）。</p>
+      <p><b>「相手のカメラ」</b>で現場のカメラ映像を大きく映せます。</p>
+    </div>
+    <div id="progress" hidden><div class="bar"><i></i></div><span></span></div>
+
+    <div class="wipe" id="remoteWipe" hidden>
+      <video muted autoplay playsinline></video>
+      <div class="wipe-label"></div>
+      <button class="wipe-close" title="ワイプを隠す">×</button>
+      <div class="wipe-resize"></div>
+    </div>
+    <div class="wipe self" id="selfWipe">
+      <video muted autoplay playsinline></video>
+      <div class="wipe-label">自分</div>
+      <button class="wipe-close" title="ワイプを隠す">×</button>
+      <div class="wipe-resize"></div>
+    </div>
+
+    <div id="banner" hidden></div>
+  </main>
+
+  <nav class="toolbar">
+    <div class="grp">
+      <button id="openBtn" class="tool wide" title="PDF・画像を開いて相手にも表示">図面を開く</button>
+      <button id="prevBtn" class="tool" title="前のページ（←）">◀</button>
+      <span id="pageText" class="page">-</span>
+      <button id="nextBtn" class="tool" title="次のページ（→）">▶</button>
+    </div>
+    <div class="grp">
+      <button id="zoomOutBtn" class="tool" title="縮小（-）">－</button>
+      <button id="fitBtn" class="tool" title="全体を表示（0）">全体</button>
+      <button id="zoomInBtn" class="tool" title="拡大（+）">＋</button>
+      <button id="syncBtn" class="tool wide on" title="オンのとき、拡大・移動を相手の画面にも反映">表示を同期</button>
+    </div>
+    <div class="grp">
+      <button class="tool tool-sel" data-tool="hand" title="移動（M）">移動</button>
+      <button class="tool tool-sel" data-tool="laser" title="レーザーポインター（L）">ポインター</button>
+      <button class="tool tool-sel" data-tool="hl" title="蛍光ペン（H）">蛍光ペン</button>
+      <button class="tool tool-sel" data-tool="pen" title="ペン（P）">ペン</button>
+      <button class="tool tool-sel" data-tool="eraser" title="消しゴム：線をなぞると消える（E）">消しゴム</button>
+      <span class="swatches" id="swatches"></span>
+      <button id="undoBtn" class="tool" title="自分の書き込みを1つ戻す（Ctrl+Z）">戻す</button>
+      <button id="clearBtn" class="tool" title="このページの書き込みを全部消す">全消去</button>
+    </div>
+    <div class="grp">
+      <button id="liveRemoteBtn" class="tool wide" title="相手のカメラ映像を大きく表示">相手のカメラ</button>
+      <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
+      <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
+      <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
+      <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
+      <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
+    </div>
+  </nav>
+</section>
+
+<!-- ===== チャット ===== -->
+<aside id="chatPanel" class="chat" hidden aria-label="チャット">
+  <header class="chat-head">
+    <b id="chatTitle"></b>
+    <button id="chatCallBtn" class="primary small" type="button">呼び出す</button>
+    <button id="chatCloseBtn" class="ghost small" type="button" aria-label="チャットを閉じる">閉じる</button>
+  </header>
+  <div id="chatList" class="chat-list" role="log" aria-live="polite"></div>
+  <div id="chatQuick" class="chat-quick"></div>
+  <form id="chatForm" class="chat-form">
+    <input id="chatInput" autocomplete="off" maxlength="2000" placeholder="メッセージを入力">
+    <button class="primary" type="submit">送信</button>
+  </form>
+</aside>
+
+<!-- ===== 着信の知らせ方 ===== -->
+<dialog id="alertDlg">
+  <form method="dialog">
+    <h2>着信の知らせ方（このPCだけの設定）</h2>
+    <fieldset>
+      <legend>着信したときの画面</legend>
+      <label class="check"><input type="radio" name="alertFlash" value="true"> 画面全体を点滅させる（目立つ・現場向け）</label>
+      <label class="check"><input type="radio" name="alertFlash" value="false"> 普通に表示する</label>
+    </fieldset>
+    <fieldset>
+      <legend>着信音</legend>
+      <label class="check"><input type="radio" name="alertSound" value="loud"> 大きく高い音（工場・現場の騒音向け）</label>
+      <label class="check"><input type="radio" name="alertSound" value="normal"> 標準の音</label>
+      <label class="check"><input type="radio" name="alertSound" value="off"> 鳴らさない</label>
+    </fieldset>
+    <label class="field"><span>音量</span><input id="alertVolume" type="range" min="0" max="100" step="5"></label>
+    <p class="hint">PC本体の音量がミュートになっていると鳴りません。現場ではPCの音量も上げておいてください。</p>
+    <div class="row end">
+      <button id="alertTestBtn" class="ghost" type="button">試しに鳴らす</button>
+      <button class="primary" value="ok">閉じる</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===== 確認 ===== -->
+<dialog id="confirmDlg">
+  <form method="dialog">
+    <p id="confirmText"></p>
+    <div class="row end">
+      <button class="ghost" value="cancel">やめる</button>
+      <button id="confirmOk" class="primary" value="ok">はい</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===== 設定 ===== -->
+<dialog id="settingsDlg">
+  <form method="dialog">
+    <h2>カメラ・マイク</h2>
+    <label class="field"><span>カメラ</span><select id="setCam"></select></label>
+    <label class="field"><span>マイク</span><select id="setMic"></select></label>
+    <label class="check"><input type="checkbox" id="mirrorChk" checked> 自分のワイプを鏡のように反転表示</label>
+    <div class="row end"><button class="primary" value="ok">閉じる</button></div>
+  </form>
+</dialog>
+
+<audio id="remoteAudio" autoplay></audio>
+<input type="file" id="fileInput" accept=".pdf,application/pdf,image/*" hidden>
+
+<script>window.ZUMEN_DEMO = true; // デモ版：通信はせず、この端末だけで動く</script>
+<script src="vendor/pdf.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
