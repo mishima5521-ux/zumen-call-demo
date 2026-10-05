@@ -55,6 +55,9 @@ const S = {
   alert: { flash: false, sound: 'normal', volume: 0.8 }, // 着信の知らせ方（PCごとに保存）
   unread: store.get('unread', {}),  // 相手ごとの未読メッセージ数
   flags: store.get('flags', {}),    // 相手ごとの「不在着信」「折り返し予定」
+  tr: { on: false, lines: [] },     // 文字起こし
+  callDocs: new Set(),              // 通話中に開いた図面・写真の名前（議事録用）
+  callStartedAt: 0,
   localStream: null,
   remoteStream: null,
   remoteName: '相手',
@@ -514,6 +517,8 @@ function acceptConn(c) {
 }
 function onCallConnected() {
   setStatus(`${S.remoteName} と通話中`, 'ok');
+  if (!S.callStartedAt) S.callStartedAt = Date.now();
+  if (S.tr.on) send({ t: 'tr-state', on: true }); // 回線断から戻ったら相手の文字起こしも再開
   S.reconnectUntil = 0;
   const m = memberByPid(S.partner);
   if (m) { clearFlag(m.id); renderChat(); }
@@ -636,6 +641,7 @@ function scheduleReconnect(ms) {
 
 // ---- 通話画面への切替と終了 ----
 function enterCall() {
+  resetCallRecord();
   S.inCall = true;
   el.lobby.hidden = true;
   el.room.hidden = false;
@@ -653,6 +659,8 @@ function enterCall() {
 function hangup(msg, notifyPeer = true) {
   if (!S.inCall) return;
   if (notifyPeer) send({ t: 'bye' });
+  stopTr(false);
+  const minutesInput = collectMinutesInput();
   S.inCall = false;
   const conn = S.conn, call = S.call;
   S.conn = null; S.call = null;
@@ -677,6 +685,8 @@ function hangup(msg, notifyPeer = true) {
   releaseMedia();
   lobbyMsg(msg || '通話を終了しました');
   probeAll(true);
+  // 文字起こしかチャットがあれば、議事録を作る
+  if (minutesInput.lines.length || minutesInput.chats.length) openMinutes(minutesInput);
 }
 
 function bindConn(c) {
@@ -900,7 +910,9 @@ function updateBellHint() {
 }
 
 // ---- 着信・発信の画面 ----
-function showCallOverlay(kind, name) {
+function showCallOverlay(kind, name, { keepDialogs = false } = {}) {
+  // 開いている画面（議事録・設定など）があると着信画面が隠れるので閉じる（議事録は閉じるときに保存される）
+  if (!keepDialogs) $$('dialog[open]').forEach((d) => d.close());
   $('#callName').textContent = name;
   $('#callAvatar').textContent = name.slice(0, 1);
   $('#callStatus').textContent = kind === 'incoming' ? 'から着信しています' : 'を呼び出しています…';
@@ -1152,6 +1164,307 @@ function demoChatReply(id, pending) {
 }
 
 // ===================================================================
+// 文字起こし・字幕・議事録
+//   各端末は「自分のマイクの声」だけを文字にして相手へ送る（双方の発言が名前つきでそろう）
+//   議事録は config.js に Claude の API キーがあれば AI がまとめ、なければ下書き（発言記録つき）を作る
+//   ※ ブラウザの文字起こしは音声をブラウザ提供元（Chrome なら Google）のサーバーで文字にする。
+//     AI のまとめは記録を Anthropic（Claude）に送る。どちらも利用者の了承のもとで使う機能。
+// ===================================================================
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const MINUTES_MODEL = 'claude-opus-5-5';
+let recog = null;
+
+function resetCallRecord() {
+  stopTr(false);
+  S.tr = { on: false, lines: [] };
+  S.callDocs = new Set();
+  S.callStartedAt = 0;
+}
+function startTr(announce = true) {
+  if (S.tr.on || !S.inCall) return;
+  if (!SR) {
+    banner('このブラウザは文字起こしに対応していません（Chrome・Edge・Safari で使えます）', 8000);
+    if (announce) send({ t: 'msg', text: `${S.name} の端末は文字起こしに対応していないため、${S.name} の発言は記録されません` });
+    return;
+  }
+  S.tr.on = true;
+  if (announce) send({ t: 'tr-state', on: true });
+  runRecog();
+  updateTrBtn();
+  banner('文字起こしを開始しました。話した内容が文字になり、議事録に使われます', 5000);
+}
+function runRecog() {
+  const r = new SR();
+  r.lang = 'ja-JP';
+  r.continuous = true;
+  r.interimResults = true;
+  r.onresult = (e) => {
+    const mic = S.localStream && S.localStream.getAudioTracks()[0];
+    if (mic && !mic.enabled) return; // マイクをオフにしている間は記録しない
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      const text = (res[0] && res[0].transcript || '').trim();
+      if (!text) continue;
+      if (res.isFinal) {
+        const line = { id: rid(), ts: Date.now(), text };
+        addTrLine('me', S.name, line);
+        send({ t: 'tr', line });
+      } else interim += text;
+    }
+    if (interim) showCaption('me', S.name, interim);
+  };
+  r.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      stopTr(true);
+      banner('文字起こしを使えません（マイクの許可とネット接続を確認してください）', 8000);
+    }
+  };
+  // 無音が続くと止まるので、オンの間は自動で再開する
+  r.onend = () => { if (recog === r && S.tr.on && S.inCall) setTimeout(() => { if (recog === r && S.tr.on) { try { r.start(); } catch { /* 開始済み */ } } }, 300); };
+  recog = r;
+  try { r.start(); } catch { /* 開始済み */ }
+}
+function stopTr(announce = true) {
+  if (!S.tr || !S.tr.on) { updateTrBtn(); return; }
+  S.tr.on = false;
+  const r = recog;
+  recog = null;
+  try { r && r.stop(); } catch { /* 停止済み */ }
+  if (announce) send({ t: 'tr-state', on: false });
+  updateTrBtn();
+}
+function updateTrBtn() {
+  const b = $('#trBtn');
+  if (!b) return;
+  const on = !!(S.tr && S.tr.on);
+  b.classList.toggle('on', on);
+  b.textContent = on ? '文字起こし中' : '文字起こし';
+}
+function addTrLine(who, name, line) {
+  if (!line || !line.text || S.tr.lines.some((x) => x.id === line.id)) return;
+  S.tr.lines.push({ id: line.id, ts: line.ts || Date.now(), who, name, text: String(line.text).slice(0, 1000) });
+  showCaption(who, name, line.text);
+}
+// 字幕（画面下）：話した人ごとに最新の一文を表示し、6秒で消す
+const capTimers = {};
+function showCaption(who, name, text) {
+  const box = $('#captions');
+  if (!box) return;
+  let row = box.querySelector(`[data-who="${who}"]`);
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'cap ' + who;
+    row.dataset.who = who;
+    row.append(document.createElement('b'), document.createElement('span'));
+    box.appendChild(row);
+  }
+  row.querySelector('b').textContent = name + '：';
+  row.querySelector('span').textContent = text;
+  row.hidden = false;
+  clearTimeout(capTimers[who]);
+  capTimers[who] = setTimeout(() => { row.hidden = true; }, 6000);
+}
+
+function collectMinutesInput() {
+  const m = S.partner && memberByPid(S.partner);
+  const start = S.callStartedAt || Date.now();
+  const chats = m ? chatLog(m.id).filter((e) => e.ts >= start && e.from !== 'sys').map((e) => ({ ts: e.ts, name: e.from === 'me' ? S.name : S.remoteName, text: e.text })) : [];
+  return {
+    start, end: Date.now(), me: S.name, partner: S.remoteName,
+    docs: [...(S.callDocs || [])],
+    lines: [...(S.tr ? S.tr.lines : [])].sort((a, b) => a.ts - b.ts),
+    chats,
+  };
+}
+const fmtDate = (ts) => new Date(ts).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+function minutesHeader(inp) {
+  const mins = Math.max(1, Math.round((inp.end - inp.start) / 60000));
+  return [
+    '議事録（図面テレビ電話）',
+    `日時：${fmtDate(inp.start)} ${hhmm(inp.start)}〜${hhmm(inp.end)}（約${mins}分）`,
+    `参加者：${inp.me}、${inp.partner}`,
+    `使用した図面・写真：${inp.docs.length ? inp.docs.join('、') : 'なし'}`,
+  ].join('\n');
+}
+function minutesRecord(inp) {
+  const out = ['■ 発言記録（文字起こし）'];
+  if (inp.lines.length) for (const l of inp.lines) out.push(`[${hhmm(l.ts)}] ${l.name}：${l.text}`);
+  else out.push('（文字起こしなし）');
+  if (inp.chats.length) {
+    out.push('', '■ チャット');
+    for (const c of inp.chats) out.push(`[${hhmm(c.ts)}] ${c.name}：${c.text}`);
+  }
+  return out.join('\n');
+}
+function minutesDraft(inp) {
+  return `${minutesHeader(inp)}\n\n■ 要点\n（AIでまとめると、ここに概要・決定事項・宿題が入ります）\n\n${minutesRecord(inp)}`;
+}
+
+const MINUTES_SYSTEM = `あなたは製造業（機械加工）の打ち合わせの議事録係です。事務所と現場がテレビ電話で図面や製品を見ながら話した内容の文字起こしとチャットから、日本語の議事録を作成してください。
+
+守ること：
+- 寸法・公差・数量・材質・図番・日付・時刻などの数値と固有名詞は、原文どおり正確に書く。
+- 発言やチャットにないことは書かない。推測で補わない。
+- 音声の聞き取り誤りと思われる箇所は勝手に直さず、「（聞き取り不明瞭：○○）」と原文を添える。
+- 出力はプレーンテキスト。見出しは「■」で始め、項目は「・」で書く。前置きやあいさつは書かない。
+
+見出しは次の5つをこの順で必ず出す（該当がなければ「・なし」）：
+■ 打ち合わせの概要（2〜3行）
+■ 決定事項
+■ 宿題・やること（「・内容（担当：○○／期限：○○）」の形。不明なら「未定」）
+■ 確認が必要な点・保留事項
+■ 図面・寸法・加工についての指摘`;
+
+function minutesPrompt(inp) {
+  return `次の打ち合わせの議事録を作成してください。\n\n${minutesHeader(inp)}\n\n<記録>\n${minutesRecord(inp)}\n</記録>`;
+}
+
+async function aiMinutes(inp) {
+  const key = String(CFG.claudeApiKey || '').trim();
+  if (!key) return null;
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MINUTES_MODEL,
+        max_tokens: 16000,
+        output_config: { effort: 'medium' },
+        fallbacks: 'default', // 安全確認で断られた場合は、別のモデルで自動的にやり直す
+        system: MINUTES_SYSTEM,
+        messages: [{ role: 'user', content: minutesPrompt(inp) }],
+      }),
+    });
+  } catch {
+    throw new Error('AIにつながりませんでした。ネット接続を確認して「AIでまとめ直す」を押してください');
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) throw new Error('Claude の API キーが正しくありません（config.js を確認してください）');
+    if (res.status === 429 || res.status === 529) throw new Error('AIが混み合っています。少し待ってから「AIでまとめ直す」を押してください');
+    throw new Error(`AIでまとめられませんでした（${res.status}${data && data.error ? '：' + data.error.message : ''}）`);
+  }
+  if (data.stop_reason === 'refusal') throw new Error('AIが議事録の作成を断りました。下書きをご利用ください');
+  let text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+  if (!text) throw new Error('AIから結果が返りませんでした');
+  if (data.stop_reason === 'max_tokens') text += '\n（長すぎるため途中で切れています）';
+  return text;
+}
+
+let minutesState = null;
+async function openMinutes(inp, { interim = false } = {}) {
+  const dlg = $('#minutesDlg');
+  minutesState = { inp, ts: Date.now() };
+  $('#minutesTitle').textContent = interim ? '議事録（途中まで）' : '議事録';
+  $('#minutesText').value = minutesDraft(inp);
+  $('#minutesAiBtn').hidden = !CFG.claudeApiKey;
+  $('#minutesCopyPromptBtn').hidden = !!CFG.claudeApiKey;
+  if (!dlg.open) dlg.showModal();
+  if (!inp.lines.length && !inp.chats.length) {
+    $('#minutesStatus').textContent = '文字起こしやチャットの記録がないため、要点は作れません。次回は通話中に「文字起こし」を押してください。';
+    return;
+  }
+  if (!CFG.claudeApiKey) {
+    $('#minutesStatus').textContent = 'AIでまとめるには、config.js に Claude の API キーを設定してください。今は「Claudeに渡す文をコピー」で、Claude アプリに貼り付けてまとめられます。';
+    saveMinutes(inp, $('#minutesText').value);
+    return;
+  }
+  await runAiMinutes();
+}
+async function runAiMinutes() {
+  const st = minutesState;
+  if (!st || !st.inp.lines) return;
+  $('#minutesStatus').textContent = 'AIが議事録をまとめています…（30秒ほどかかることがあります）';
+  $('#minutesAiBtn').disabled = true;
+  try {
+    const body = await aiMinutes(st.inp);
+    if (minutesState !== st) return;
+    const text = `${minutesHeader(st.inp)}\n\n${body}\n\n${minutesRecord(st.inp)}`;
+    $('#minutesText').value = text;
+    $('#minutesStatus').textContent = 'AIがまとめました。内容を確認し、必要なら直接書き直してから保存してください。';
+    saveMinutes(st.inp, text);
+  } catch (e) {
+    if (minutesState !== st) return;
+    $('#minutesStatus').textContent = e.message + '（下は下書きです）';
+    saveMinutes(st.inp, $('#minutesText').value);
+  } finally {
+    $('#minutesAiBtn').disabled = false;
+  }
+}
+function saveMinutes(inp, text) {
+  const list = store.get('minutes', []);
+  const i = list.findIndex((x) => x.start === inp.start && x.partner === inp.partner);
+  const item = { start: inp.start, partner: inp.partner, text };
+  if (i >= 0) list[i] = item; else list.unshift(item);
+  store.set('minutes', list.slice(0, 30));
+}
+async function copyText(text, label) {
+  try { await navigator.clipboard.writeText(text); banner(`${label}をコピーしました`, 3000); }
+  catch { const t = $('#minutesText'); t.focus(); t.select(); banner('自動でコピーできませんでした。選択された文字をコピーしてください', 5000); }
+}
+function downloadMinutes() {
+  const text = $('#minutesText').value;
+  const inp = minutesState && minutesState.inp;
+  const d = new Date(inp ? inp.start : Date.now());
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + text.replace(/\n/g, '\r\n')], { type: 'text/plain' }));
+  a.download = `議事録_${stamp}_${inp ? inp.partner : ''}.txt`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function openMinutesHistory() {
+  const list = store.get('minutes', []);
+  const ul = $('#minutesList');
+  ul.innerHTML = '';
+  if (!list.length) { const li = document.createElement('li'); li.textContent = 'まだ議事録はありません'; ul.appendChild(li); }
+  for (const it of list) {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ghost';
+    b.textContent = `${fmtDate(it.start)} ${hhmm(it.start)}　${it.partner}`;
+    b.addEventListener('click', () => {
+      $('#historyDlg').close();
+      minutesState = { inp: { start: it.start, partner: it.partner }, ts: Date.now() };
+      $('#minutesTitle').textContent = '議事録';
+      $('#minutesText').value = it.text;
+      $('#minutesStatus').textContent = '';
+      $('#minutesAiBtn').hidden = true;
+      $('#minutesCopyPromptBtn').hidden = true;
+      $('#minutesDlg').showModal();
+    });
+    li.appendChild(b);
+    ul.appendChild(li);
+  }
+  $('#historyDlg').showModal();
+}
+function setupMinutes() {
+  $('#trBtn').addEventListener('click', () => { if (S.tr.on) stopTr(true); else startTr(true); });
+  $('#minutesBtn').addEventListener('click', () => openMinutes(collectMinutesInput(), { interim: true }));
+  $('#minutesAiBtn').addEventListener('click', runAiMinutes);
+  $('#minutesCopyBtn').addEventListener('click', () => copyText($('#minutesText').value, '議事録'));
+  $('#minutesCopyPromptBtn').addEventListener('click', () => {
+    const st = minutesState;
+    if (!st || !st.inp.lines) return;
+    copyText(`${MINUTES_SYSTEM}\n\n${minutesPrompt(st.inp)}`, 'Claudeに渡す文');
+  });
+  $('#minutesSaveBtn').addEventListener('click', downloadMinutes);
+  $('#historyBtn').addEventListener('click', openMinutesHistory);
+  const keep = () => { const st = minutesState; if (st && st.inp.lines) saveMinutes(st.inp, $('#minutesText').value); };
+  $('#minutesText').addEventListener('change', keep);
+  $('#minutesDlg').addEventListener('close', keep);
+}
+
+// ===================================================================
 // 受信メッセージ
 // ===================================================================
 function onMessage(m) {
@@ -1182,6 +1495,11 @@ function onMessage(m) {
     case 'clear': clearStrokes(m.key, false); break;
     case 'snap-req': banner(`${S.remoteName} の依頼で撮影します`); takeSnapshot(); break;
     case 'msg': banner(m.text); break;
+    case 'tr': addTrLine('them', S.remoteName, m.line); break;
+    case 'tr-state':
+      if (m.on && !S.tr.on) { startTr(false); banner(`${S.remoteName} が文字起こしを開始しました。話した内容が議事録に使われます`, 6000); }
+      else if (!m.on && S.tr.on) { stopTr(false); banner(`${S.remoteName} が文字起こしを止めました`, 4000); }
+      break;
     default: break;
   }
 }
@@ -1242,6 +1560,7 @@ async function prepareDoc(doc) {
     doc.pages = 1;
   }
   S.docs.set(doc.id, doc);
+  if (S.inCall) S.callDocs.add(doc.name);
   return doc;
 }
 
@@ -2230,7 +2549,7 @@ function testAlert() {
   unlockSound();
   readAlertSettings();
   stopAlertTest();
-  showCallOverlay('incoming', '（お試し）');
+  showCallOverlay('incoming', '（お試し）', { keepDialogs: true });
   $('#callStatus').textContent = 'このように知らせます（5秒で止まります）';
   for (const id of ['#answerBtn', '#callbackBtn', '#declineBtn']) $(id).hidden = true;
   startTone('ring', { seconds: 5 });
@@ -2313,6 +2632,7 @@ async function init() {
   setupToolbar();
   setupWipe(el.remoteWipe);
   setupWipe(el.selfWipe);
+  setupMinutes();
   window.addEventListener('resize', layout);
   new ResizeObserver(() => { if (!el.room.hidden) layout(); }).observe(el.stage);
   requestAnimationFrame(drawPointers);

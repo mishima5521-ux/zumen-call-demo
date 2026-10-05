@@ -335,3 +335,22 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   #fullBtn { order: 1 !important; }
   #flipBtn { order: 1 !important; }
 }
+
+/* 字幕（文字起こし） */
+.captions { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 25; width: min(900px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 4px; pointer-events: none; }
+.cap { background: rgba(0,0,0,.72); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 18px; line-height: 1.4; }
+.cap b { color: #ffd84d; margin-right: 4px; }
+.cap.them b { color: #7fd1ff; }
+#banner { bottom: 110px; }
+
+/* 議事録 */
+dialog.minutes { width: min(820px, calc(100% - 24px)); }
+#minutesText { width: 100%; min-height: 50vh; resize: vertical; font: 15px/1.6 inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; white-space: pre-wrap; }
+.row.wrap { flex-wrap: wrap; }
+.minutes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.minutes-list button { width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+#trBtn.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+@media (max-width: 720px) {
+  .cap { font-size: 15px; }
+  #trBtn { order: 1 !important; }
+}

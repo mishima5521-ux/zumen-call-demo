@@ -18,7 +18,7 @@
         <button id="changeMeBtn" class="linkbtn" type="button">変更</button>
         <span class="me-status"><span id="meDot" class="dot"></span> <span id="meStatus">準備中</span></span>
       </div>
-      <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button></div>
+      <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button><button id="historyBtn" class="ghost small" type="button">議事録の履歴</button></div>
     </header>
 
     <div id="setupBox" hidden>
@@ -117,6 +117,7 @@
       <div class="wipe-resize"></div>
     </div>
 
+    <div id="captions" class="captions" aria-live="polite"></div>
     <div id="banner" hidden></div>
     <button id="fullExitBtn" class="full-exit" type="button" hidden>全画面を終わる</button>
   </main>
@@ -150,6 +151,8 @@
       <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
       <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
       <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
+      <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
+      <button id="minutesBtn" class="tool wide" title="ここまでの議事録を作る">議事録</button>
       <button id="fullBtn" class="tool wide" title="映像（図面）だけを画面いっぱいに表示（F）">全画面</button>
       <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
       <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
@@ -193,6 +196,29 @@
       <button id="alertTestBtn" class="ghost" type="button">試しに鳴らす</button>
       <button class="primary" value="ok">閉じる</button>
     </div>
+  </form>
+</dialog>
+
+<!-- ===== 議事録 ===== -->
+<dialog id="minutesDlg" class="minutes">
+  <form method="dialog">
+    <h2 id="minutesTitle">議事録</h2>
+    <p id="minutesStatus" class="hint"></p>
+    <textarea id="minutesText" spellcheck="false" aria-label="議事録の本文（直接書き直せます）"></textarea>
+    <div class="row end wrap">
+      <button id="minutesAiBtn" class="ghost" type="button">AIでまとめ直す</button>
+      <button id="minutesCopyPromptBtn" class="ghost" type="button">Claudeに渡す文をコピー</button>
+      <button id="minutesCopyBtn" class="ghost" type="button">コピー</button>
+      <button id="minutesSaveBtn" class="ghost" type="button">ファイルに保存</button>
+      <button class="primary" value="close">閉じる</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="historyDlg">
+  <form method="dialog">
+    <h2>議事録の履歴（このPCに保存）</h2>
+    <ul id="minutesList" class="minutes-list"></ul>
+    <div class="row end"><button class="primary" value="close">閉じる</button></div>
   </form>
 </dialog>
 
