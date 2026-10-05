@@ -82,6 +82,7 @@ const S = {
   pointers: new Map(),   // 'me' | 'remote' -> { pts:[{u,v,t}], key, name, last }
   incoming: new Map(),   // 受信中ファイル
   pendingDoc: null,
+  share: null,           // 画面共有中 { stream, track, prev }
 };
 if (QS.has('debug')) window.__zumen = S; // 動作確認用
 
@@ -281,7 +282,7 @@ async function switchCamera(deviceId, facing = null) {
   if (old) { S.localStream.removeTrack(old); old.stop(); }
   S.localStream.addTrack(nt);
   const sender = videoSender();
-  if (sender) await sender.replaceTrack(nt);
+  if (sender && !S.share) await sender.replaceTrack(nt);
   refreshLocalVideos();
   await applyQuality();
 }
@@ -323,9 +324,9 @@ async function applyQuality() {
   if (!sender || !sender.getParameters) return;
   const p = sender.getParameters();
   if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-  p.encodings[0].maxBitrate = q.br;
+  p.encodings[0].maxBitrate = S.share ? Math.max(q.br, 6_000_000) : q.br;
   p.encodings[0].scaleResolutionDownBy = 1;
-  p.degradationPreference = q.deg;
+  p.degradationPreference = S.share ? 'maintain-resolution' : q.deg;
   try { await sender.setParameters(p); }
   catch {
     try { delete p.degradationPreference; await sender.setParameters(p); } catch { /* 未対応ブラウザ */ }
@@ -671,11 +672,15 @@ function hangup(msg, notifyPeer = true) {
   const o = S.outgoing;
   if (o && o.reconnect) { clearTimeout(o.timer); S.outgoing = null; if (o.c) { try { o.c.close(); } catch { /* 既に閉じている */ } } }
   setRemoteStream(null);
+  endShare();
   // 通話中のデータを片付ける（図面はメモリから消す）
   for (const d of S.docs.values()) { try { d.pdf && d.pdf.destroy(); d.img && d.img.close && d.img.close(); } catch { /* 解放済み */ } }
   lowCache.clear();
   S.docs.clear(); S.strokes.clear(); S.strokeById.clear(); S.incoming.clear(); S.pointers.clear();
   S.myStack = []; S.content = { type: 'none' }; S.contentTs = 0; S.cur = null; S.partner = null; S.token = null;
+  for (const t of docReqTimers.values()) clearTimeout(t);
+  docReqTimers.clear();
+  renderTabs();
   if (S.quality !== 'std') setQuality('std');
   progress(null); banner(null);
   closeChat();
@@ -720,6 +725,7 @@ function bindCall(call) {
   S.call = call;
   call.on('stream', (st) => {
     setRemoteStream(st);
+    if (S.share) { const sd = videoSender(); if (sd) sd.replaceTrack(S.share.track).catch(() => {}); }
     setTimeout(applyQuality, 500);
   });
   call.on('close', () => {
@@ -1502,6 +1508,9 @@ function onMessage(m) {
     case 'del': deleteStroke(m.id, false); break;
     case 'clear': clearStrokes(m.key, false); break;
     case 'snap-req': banner(`${S.remoteName} の依頼で撮影します`); takeSnapshot(); break;
+    case 'doc-req': sendDoc(S.docs.get(m.id)); break;
+    case 'doc-close': closeDoc(m.id, { fromRemote: true }); break;
+    case 'share': banner(m.on ? `${S.remoteName} が画面を共有しています` : `${S.remoteName} が画面の共有を終えました`, 5000); break;
     case 'msg': banner(m.text); break;
     case 'tr': addTrLine('them', S.remoteName, m.line); break;
     case 'tr-state':
@@ -1569,6 +1578,7 @@ async function prepareDoc(doc) {
   }
   S.docs.set(doc.id, doc);
   if (S.inCall) S.callDocs.add(doc.name);
+  renderTabs();
   return doc;
 }
 
@@ -1585,8 +1595,14 @@ async function openLocalFile(file) {
 }
 
 function sendDoc(doc) {
-  if (!doc) return;
+  if (!doc || doc.sending) return;
+  doc.sending = true;
   sendQueued(async () => {
+    try { await sendDocNow(doc); } finally { doc.sending = false; }
+  });
+}
+async function sendDocNow(doc) {
+  {
     if (!S.conn || !S.conn.open) return;
     const buf = await doc.blob.arrayBuffer();
     const size = buf.byteLength;
@@ -1598,7 +1614,17 @@ function sendDoc(doc) {
     }
     send({ t: 'fe', id: doc.id });
     progress(null);
-  });
+  }
+}
+
+// 表示する図面が手元にない（再接続で取りこぼした等）ときは、少し待ってから相手に送ってもらう
+const docReqTimers = new Map();
+function requestDocLater(id) {
+  if (docReqTimers.has(id)) return;
+  docReqTimers.set(id, setTimeout(() => {
+    docReqTimers.delete(id);
+    if (S.inCall && !S.docs.has(id) && !S.incoming.has(id) && S.content.type === 'doc' && S.content.docId === id) send({ t: 'doc-req', id });
+  }, 4000));
 }
 
 function fileBegin(m) {
@@ -1619,6 +1645,7 @@ async function fileEnd(m) {
   S.incoming.delete(m.id);
   progress(null);
   const doc = { id: m.id, kind: f.meta.kind, name: f.meta.name, mime: f.meta.mime, blob: new Blob(f.parts, { type: f.meta.mime }) };
+  if (S.docs.has(doc.id)) return; // 同じ図面を二重に受け取った
   try { await prepareDoc(doc); } catch (e) { console.error(e); banner('受け取った図面を開けませんでした'); return; }
   if (S.content.type === 'doc' && S.content.docId === doc.id) prepareContent();
 }
@@ -1628,11 +1655,12 @@ async function fileEnd(m) {
 // ===================================================================
 function keyOf(c) {
   if (c.type === 'doc') return `${c.docId}:${c.page}`;
-  if (c.type === 'live') return `live:${c.who}`;
+  if (c.type === 'live') return `live:${c.who}${c.screen ? ':screen' : ''}`;
   return null;
 }
 
 function setContent(c, { send: doSend = true, view = null, ts = null } = {}) {
+  rememberDocView();
   S.content = c;
   S.contentTs = ts || Date.now();
   S.view = view ? { ...view } : { cx: 0.5, cy: 0.5, zoom: 1 };
@@ -1657,7 +1685,7 @@ async function prepareContent() {
     return redrawAll();
   }
   const doc = S.docs.get(c.docId);
-  if (!doc) { S.cur = null; redrawAll(); progress('図面を受信中…', 0); return; }
+  if (!doc) { S.cur = null; redrawAll(); progress('図面を受信中…', 0); requestDocLater(c.docId); return; }
   if (doc.kind === 'image') {
     S.cur = { key, kind: 'image', W: doc.img.width, H: doc.img.height, img: doc.img, doc };
     return redrawAll();
@@ -1693,7 +1721,7 @@ async function renderLow(page) {
 function attachStageVideo() {
   const c = S.content;
   if (c.type !== 'live') return;
-  const src = c.who === S.role ? S.localStream : S.remoteStream;
+  const src = c.who !== S.role ? S.remoteStream : c.screen && S.share ? S.share.stream : S.localStream;
   if (el.stageVideo.srcObject !== src) el.stageVideo.srcObject = src;
   el.stageVideo.play().catch(() => {});
 }
@@ -2148,14 +2176,15 @@ function updateWipes() {
   const live = S.content.type === 'live' ? S.content.who : null;
   const remoteWho = S.role === 'host' ? 'guest' : 'host';
   el.remoteWipe.hidden = !S.remoteStream || el.remoteWipe.dataset.closed === '1' || live === remoteWho;
-  el.selfWipe.hidden = el.selfWipe.dataset.closed === '1' || live === S.role;
-  el.selfWipe.classList.toggle('mirror', S.mirror);
+  el.selfWipe.hidden = el.selfWipe.dataset.closed === '1' || (live === S.role && !S.content.screen);
+  el.selfWipe.classList.toggle('mirror', S.mirror && realVideoTrack()?.getSettings().facingMode !== 'environment');
 }
 
 // ===================================================================
 // 高画質スナップショット
 // ===================================================================
 async function takeSnapshot() {
+  if (S.share) return snapScreen();
   const t = realVideoTrack();
   if (!t) { banner('カメラがありません'); send({ t: 'msg', text: `${S.name} 側にカメラがないため撮影できません` }); return; }
   progress('撮影中…', 0.3);
@@ -2176,6 +2205,18 @@ async function takeSnapshot() {
   const now = new Date();
   const name = `写真_${now.getHours()}時${String(now.getMinutes()).padStart(2, '0')}分.jpg`;
   const doc = { id: rid(), kind: 'image', name, mime: 'image/jpeg', blob };
+  await prepareDoc(doc);
+  sendDoc(doc);
+  setContent({ type: 'doc', docId: doc.id, page: 1 });
+}
+async function snapScreen() {
+  progress('画面を撮影中…', 0.3);
+  let blob = null;
+  try { blob = await grabFrame(S.share.track); } catch (e) { console.error(e); }
+  progress(null);
+  if (!blob) { banner('撮影できませんでした'); return; }
+  const now = new Date();
+  const doc = { id: rid(), kind: 'image', name: `画面_${now.getHours()}時${String(now.getMinutes()).padStart(2, '0')}分.jpg`, mime: 'image/jpeg', blob };
   await prepareDoc(doc);
   sendDoc(doc);
   setContent({ type: 'doc', docId: doc.id, page: 1 });
@@ -2290,11 +2331,15 @@ function updateToolbar() {
   const c = S.content;
   const doc = c.type === 'doc' ? S.docs.get(c.docId) : null;
   const isPdf = doc && doc.kind === 'pdf';
-  el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? 'カメラ' : '-';
+  el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? (c.screen ? '画面' : 'カメラ') : '-';
   $('#prevBtn').disabled = !isPdf || c.page <= 1;
   $('#nextBtn').disabled = !isPdf || c.page >= doc.pages;
-  $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && c.who !== S.role);
-  $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && c.who === S.role);
+  $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && c.who !== S.role && !c.screen);
+  $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && c.who === S.role && !c.screen);
+  const sb = $('#shareBtn');
+  sb.classList.toggle('on', !!S.share);
+  sb.textContent = S.share ? '共有を停止' : '画面共有';
+  renderTabs();
 }
 // 全画面：上下のバーを隠し、映像（図面）だけを画面いっぱいに表示する
 function setFullscreen(on) {
@@ -2318,8 +2363,149 @@ function gotoPage(d) {
 }
 function showLive(who) {
   const c = S.content;
-  if (c.type === 'live' && c.who === who) return;
+  if (c.type === 'live' && c.who === who && !c.screen) return;
   setContent({ type: 'live', who });
+}
+
+// ===================================================================
+// タブ（通話中に開いた図面・撮った写真。エクセルのシートのように切り替える）
+//   図面と書き込みは通話が終わるまで両方の端末に残っているので、タブで選べばすぐ戻れる
+// ===================================================================
+function rememberDocView() {
+  const c = S.content;
+  if (c.type !== 'doc') return;
+  const d = S.docs.get(c.docId);
+  if (d) { d.lastPage = c.page; d.lastView = { ...S.view }; }
+}
+function selectDoc(id) {
+  const d = S.docs.get(id);
+  if (!d) return;
+  if (S.content.type === 'doc' && S.content.docId === id) return;
+  setContent({ type: 'doc', docId: id, page: d.lastPage || 1 }, { view: d.lastView });
+}
+const docIcon = (d) => (d.kind === 'pdf' ? '図' : /^画面_/.test(d.name) ? '画' : /^写真_/.test(d.name) ? '写' : '絵');
+let tabSig = '';
+function renderTabs() {
+  const bar = $('#tabbar');
+  if (!bar) return;
+  const c = S.content;
+  // 拡大・移動のたびに作り直さないよう、タブの中身が変わったときだけ描き直す
+  const sig = [...S.docs.values()].map((d) => `${d.id}.${d.pages}.${d.lastPage || 1}`).join() + '|' + (c.type === 'doc' ? `${c.docId}.${c.page}` : '');
+  if (sig === tabSig) return;
+  tabSig = sig;
+  const list = $('#tabList');
+  list.innerHTML = '';
+  for (const d of S.docs.values()) {
+    const active = c.type === 'doc' && c.docId === d.id;
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (active ? ' on' : '');
+    tab.setAttribute('role', 'presentation');
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'tab-main';
+    main.setAttribute('role', 'tab');
+    main.setAttribute('aria-selected', active ? 'true' : 'false');
+    main.title = d.name;
+    const ic = document.createElement('span');
+    ic.className = 'tab-ic';
+    ic.textContent = docIcon(d);
+    const nm = document.createElement('span');
+    nm.className = 'tab-name';
+    nm.textContent = d.name.replace(/\.[^.]+$/, '');
+    main.append(ic, nm);
+    if (d.kind === 'pdf' && d.pages > 1) {
+      const pg = document.createElement('span');
+      pg.className = 'tab-page';
+      pg.textContent = `${active ? c.page : d.lastPage || 1}/${d.pages}`;
+      main.appendChild(pg);
+    }
+    main.addEventListener('click', () => selectDoc(d.id));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'tab-x';
+    x.textContent = '×';
+    x.title = 'このタブを閉じる';
+    x.setAttribute('aria-label', `${d.name} を閉じる`);
+    x.addEventListener('click', () => closeDoc(d.id));
+    tab.append(main, x);
+    list.appendChild(tab);
+    if (active) requestAnimationFrame(() => tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+  bar.classList.toggle('empty', !S.docs.size);
+}
+async function closeDoc(id, { fromRemote = false } = {}) {
+  const d = S.docs.get(id);
+  if (!d) return;
+  const keys = [...S.strokes.keys()].filter((k) => k.startsWith(id + ':'));
+  const inked = keys.some((k) => (S.strokes.get(k) || []).length);
+  if (!fromRemote && !(await askConfirm(`「${d.name}」のタブを閉じます。${inked ? '書き込みも消えます。' : ''}相手の画面からも閉じます。`, '閉じる'))) return;
+  if (!S.docs.has(id)) return;
+  // 表示中なら、となりのタブ（なければ何も表示しない）へ
+  if (S.content.type === 'doc' && S.content.docId === id) {
+    const ids = [...S.docs.keys()];
+    const i = ids.indexOf(id);
+    const next = ids[i + 1] || ids[i - 1];
+    S.content = { type: 'none' }; // 閉じる図面の位置は覚えない
+    if (next) selectDoc(next);
+    else setContent({ type: 'none' }, { send: !fromRemote });
+  }
+  for (const k of keys) { for (const st of S.strokes.get(k) || []) S.strokeById.delete(st.id); S.strokes.delete(k); }
+  try { d.pdf && d.pdf.destroy(); d.img && d.img.close && d.img.close(); } catch { /* 解放済み */ }
+  S.docs.delete(id);
+  if (!fromRemote) send({ t: 'doc-close', id });
+  renderTabs();
+}
+
+// ===================================================================
+// 画面共有（自分のデスクトップやアプリの画面を相手に見せる）
+//   送っているカメラ映像を、共有する画面に差し替える（共有中は相手に顔は映らない）
+// ===================================================================
+const canShare = () => !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+async function startShare() {
+  if (S.share) return;
+  if (!canShare()) { banner('この端末（ブラウザ）は画面共有に対応していません。PC の Chrome か Edge を使ってください', 6000); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 }, width: { max: 2560 }, height: { max: 1440 } }, audio: false });
+  } catch (e) {
+    if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') banner('画面共有を開始できませんでした');
+    return;
+  }
+  const track = stream.getVideoTracks()[0];
+  if (!track || !S.inCall) { stream.getTracks().forEach((t) => t.stop()); return; }
+  track.contentHint = 'detail';
+  track.addEventListener('ended', () => { if (S.share && S.share.track === track) stopShare(); });
+  rememberDocView();
+  S.share = { stream, track, prev: S.content };
+  const sender = videoSender();
+  if (sender) { try { await sender.replaceTrack(track); } catch (e) { console.warn(e); } }
+  applyQuality();
+  send({ t: 'share', on: true });
+  setContent({ type: 'live', who: S.role, screen: true });
+  banner('画面を共有しています。やめるときは「共有を停止」を押してください', 6000);
+}
+// 共有をやめて、カメラ映像に戻す
+async function stopShare() {
+  const sh = S.share;
+  if (!sh) return;
+  endShare();
+  const sender = videoSender();
+  const cam = S.localStream && S.localStream.getVideoTracks()[0];
+  if (sender && cam) { try { await sender.replaceTrack(cam); } catch (e) { console.warn(e); } }
+  applyQuality();
+  send({ t: 'share', on: false });
+  if (S.content.type === 'live' && S.content.screen && S.content.who === S.role) {
+    const p = sh.prev;
+    if (p && p.type === 'doc' && S.docs.has(p.docId)) { const d = S.docs.get(p.docId); setContent({ ...p, page: d.lastPage || p.page }, { view: d.lastView }); }
+    else if (p && p.type === 'live' && !p.screen) setContent(p);
+    else setContent({ type: 'none' });
+  }
+  updateToolbar();
+}
+function endShare() {
+  if (!S.share) return;
+  S.share.stream.getTracks().forEach((t) => t.stop());
+  S.share = null;
 }
 
 function setupToolbar() {
@@ -2348,6 +2534,9 @@ function setupToolbar() {
   $('#liveRemoteBtn').addEventListener('click', () => showLive(S.role === 'host' ? 'guest' : 'host'));
   $('#liveSelfBtn').addEventListener('click', () => showLive(S.role));
   $('#snapSelfBtn').addEventListener('click', takeSnapshot);
+  $('#shareBtn').hidden = !canShare();
+  $('#shareBtn').addEventListener('click', () => (S.share ? stopShare() : startShare()));
+  $('#tabAddBtn').addEventListener('click', () => el.fileInput.click());
   $('#snapRemoteBtn').addEventListener('click', () => {
     if (DEMO) { takeSnapshot(); return; }
     if (!S.conn || !S.conn.open) { banner('相手とつながっていません'); return; }

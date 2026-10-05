@@ -128,6 +128,12 @@
     <button id="fullExitBtn" class="full-exit" type="button" hidden>全画面を終わる</button>
   </main>
 
+  <!-- 開いた図面・撮った写真のタブ（エクセルのシートのように切り替える） -->
+  <div id="tabbar" class="tabbar empty">
+    <div id="tabList" class="tab-list" role="tablist" aria-label="開いた図面・写真"></div>
+    <button id="tabAddBtn" class="tab-add" type="button" title="図面・写真を開いて、新しいタブに追加">＋ 開く</button>
+  </div>
+
   <nav class="toolbar">
     <div class="grp">
       <button id="openBtn" class="tool wide" title="PDF・画像を開いて相手にも表示">図面を開く</button>
@@ -155,6 +161,7 @@
       <button id="liveRemoteBtn" class="tool wide" title="相手のカメラ映像を大きく表示">相手のカメラ</button>
       <button id="flipBtn" class="tool wide" title="カメラを切り替える（スマホは外側／内側）" hidden>カメラ切替</button>
       <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
+      <button id="shareBtn" class="tool wide" title="自分のPCの画面（デスクトップ・アプリ）を相手に見せる">画面共有</button>
       <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
       <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
       <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
