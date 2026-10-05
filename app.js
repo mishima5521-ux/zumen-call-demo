@@ -909,12 +909,20 @@ function updateBellHint() {
   h.classList.toggle('warn', !ok);
 }
 
+// 相手の印：数字で終わる名前は大字（現場1 → 壱）、それ以外は先頭の1文字
+const DAIJI = ['零', '壱', '弐', '参', '肆', '伍', '陸', '漆', '捌', '玖'];
+function markOf(name) {
+  const m = /(\d+)$/.exec(name);
+  return m ? (m[1].length === 1 ? DAIJI[m[1]] : m[1]) : name.slice(0, 1);
+}
+
 // ---- 着信・発信の画面 ----
 function showCallOverlay(kind, name, { keepDialogs = false } = {}) {
   // 開いている画面（議事録・設定など）があると着信画面が隠れるので閉じる（議事録は閉じるときに保存される）
   if (!keepDialogs) $$('dialog[open]').forEach((d) => d.close());
   $('#callName').textContent = name;
-  $('#callAvatar').textContent = name.slice(0, 1);
+  $('#callAvatar').textContent = markOf(name);
+  $('#callKanji').textContent = kind === 'incoming' ? '着信' : '発信';
   $('#callStatus').textContent = kind === 'incoming' ? 'から着信しています' : 'を呼び出しています…';
   for (const id of ['#answerBtn', '#callbackBtn', '#declineBtn']) $(id).hidden = kind !== 'incoming';
   $('#cancelBtn').hidden = kind === 'incoming';
@@ -2440,7 +2448,7 @@ function renderContacts() {
     li.className = 'contact' + (flag ? ' flagged ' + flag.kind : '');
     const av = document.createElement('span');
     av.className = 'avatar';
-    av.textContent = m.name.slice(0, 1);
+    av.textContent = markOf(m.name);
     const info = document.createElement('span');
     info.className = 'cinfo';
     const nm = document.createElement('b');

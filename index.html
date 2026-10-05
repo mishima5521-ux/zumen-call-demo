@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>図面テレビ電話（デモ）</title>
+<!-- 筆文字・明朝の書体（ネットにつながらないときは PC の明朝体で表示） -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Yuji+Syuku&amp;family=Shippori+Mincho:wght@500;700;800&amp;display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -55,6 +59,8 @@
 <!-- ===== 着信・発信の画面 ===== -->
 <div id="callOverlay" class="overlay" hidden>
   <div class="call-card">
+    <svg class="call-brush" viewBox="0 0 320 420" preserveAspectRatio="none" aria-hidden="true"><path d="M40 380 C70 300 120 220 170 160 C210 112 250 70 300 20 C262 80 228 130 196 182 C150 256 110 320 80 400 Z" fill="#c8322a" fill-opacity=".85"/></svg>
+    <div id="callKanji" class="call-kanji" aria-hidden="true">着信</div>
     <div id="callAvatar" class="call-avatar"></div>
     <div id="callName" class="call-name"></div>
     <div id="callStatus" class="call-status"></div>
