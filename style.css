@@ -311,3 +311,26 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   background: rgba(0,0,0,.6); color: #fff; font-weight: 600;
 }
 #room.full #remoteWipe { top: 68px; }
+
+/* スマホ：よく使うボタンを先頭に、上部は1行に */
+@media (max-width: 720px) {
+  .topbar { flex-wrap: nowrap; }
+  .tb-left { flex: 1; min-width: 0; flex-wrap: nowrap; }
+  #connText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-size: 13px; }
+  .tb-right { flex-wrap: nowrap; }
+  #settingsBtn { display: none; }
+  .toolbar .grp:nth-child(4) { order: -2; }  /* 相手のカメラ・全画面・撮影 */
+  .toolbar .grp:nth-child(3) { order: -1; }  /* ポインター・蛍光ペンなど */
+  .toolbar .grp:last-child { border-right: 1px solid var(--line); }
+  .toolbar .grp:first-child { border-right: 0; }
+  #wipeBtn, #saveBtn { display: none; }
+}
+@media (max-width: 420px) {
+  .tbtn { padding: 4px 6px; font-size: 12px; }
+}
+@media (max-width: 720px) {
+  body.demo .topbar .tb-left::before { white-space: nowrap; flex: none; }
+  .toolbar .grp:nth-child(4) > * { order: 2; }
+  #liveRemoteBtn { order: 0 !important; }
+  #fullBtn { order: 1 !important; }
+}

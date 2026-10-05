@@ -238,6 +238,8 @@ async function listDevices() {
   const curCam = realVideoTrack()?.getSettings().deviceId || S.camId;
   const curMic = S.localStream?.getAudioTracks()[0]?.getSettings().deviceId || S.micId;
   for (const sel of [el.lobbyCam, $('#setCam')]) fillSelect(sel, cams, curCam, 'カメラ');
+  S.cams = cams;
+  $('#flipBtn').hidden = cams.length < 2;
   for (const sel of [el.lobbyMic, $('#setMic')]) fillSelect(sel, mics, curMic, 'マイク');
 }
 function fillSelect(sel, list, cur, label) {
@@ -260,11 +262,16 @@ function audioSender() {
 async function switchCamera(deviceId) {
   S.camId = deviceId; store.set('camId', deviceId);
   if (!S.localStream) return;
+  const old = S.localStream.getVideoTracks()[0];
   let ns;
   try { ns = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(QUALITY[S.quality]) }); }
-  catch { banner('このカメラを開けませんでした'); return; }
+  catch {
+    // スマホはカメラを2つ同時に開けないことがあるので、今のカメラを止めてから開き直す
+    if (old && !old._dummy) old.stop();
+    try { ns = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(QUALITY[S.quality]) }); }
+    catch { banner('このカメラを開けませんでした'); return; }
+  }
   const nt = ns.getVideoTracks()[0];
-  const old = S.localStream.getVideoTracks()[0];
   nt.enabled = old ? old.enabled : true;
   if (old) { S.localStream.removeTrack(old); old.stop(); }
   S.localStream.addTrack(nt);
@@ -2040,6 +2047,15 @@ function setupToolbar() {
     t.enabled = !t.enabled;
     e.currentTarget.classList.toggle('off', !t.enabled);
     e.currentTarget.textContent = t.enabled ? 'カメラ' : 'カメラ オフ';
+  });
+  // カメラ切替：次のカメラへ（スマホなら外側／内側）
+  $('#flipBtn').addEventListener('click', async () => {
+    const cams = S.cams || [];
+    if (cams.length < 2) return;
+    const cur = realVideoTrack()?.getSettings().deviceId || S.camId;
+    const i = cams.findIndex((d) => d.deviceId === cur);
+    await switchCamera(cams[(i + 1) % cams.length].deviceId);
+    await listDevices();
   });
   $('#settingsBtn').addEventListener('click', async () => { await listDevices(); $('#settingsDlg').showModal(); });
   $('#setCam').addEventListener('change', (e) => switchCamera(e.target.value));
