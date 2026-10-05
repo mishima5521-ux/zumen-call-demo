@@ -239,7 +239,7 @@ async function listDevices() {
   const curMic = S.localStream?.getAudioTracks()[0]?.getSettings().deviceId || S.micId;
   for (const sel of [el.lobbyCam, $('#setCam')]) fillSelect(sel, cams, curCam, 'カメラ');
   S.cams = cams;
-  $('#flipBtn').hidden = cams.length < 2;
+  $('#flipBtn').hidden = cams.length < 2 && !realVideoTrack()?.getSettings().facingMode;
   for (const sel of [el.lobbyMic, $('#setMic')]) fillSelect(sel, mics, curMic, 'マイク');
 }
 function fillSelect(sel, list, cur, label) {
@@ -259,16 +259,18 @@ function audioSender() {
   return pc ? pc.getSenders().find((s) => s.track && s.track.kind === 'audio') : null;
 }
 
-async function switchCamera(deviceId) {
-  S.camId = deviceId; store.set('camId', deviceId);
+// deviceId でカメラを選ぶ。facing（'user'＝内側／'environment'＝外側）を渡すとスマホの向きで選ぶ
+async function switchCamera(deviceId, facing = null) {
+  S.camId = facing ? '' : deviceId; store.set('camId', S.camId);
   if (!S.localStream) return;
   const old = S.localStream.getVideoTracks()[0];
+  const vc = () => { const c = videoConstraints(QUALITY[S.quality]); if (facing) { delete c.deviceId; c.facingMode = { exact: facing }; } return c; };
   let ns;
-  try { ns = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(QUALITY[S.quality]) }); }
+  try { ns = await navigator.mediaDevices.getUserMedia({ video: vc() }); }
   catch {
     // スマホはカメラを2つ同時に開けないことがあるので、今のカメラを止めてから開き直す
     if (old && !old._dummy) old.stop();
-    try { ns = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(QUALITY[S.quality]) }); }
+    try { ns = await navigator.mediaDevices.getUserMedia({ video: vc() }); }
     catch { banner('このカメラを開けませんでした'); return; }
   }
   const nt = ns.getVideoTracks()[0];
@@ -301,7 +303,8 @@ function refreshLocalVideos() {
   $('#previewBtn').textContent = S.localStream ? '確認を終わる' : 'カメラを確認';
   $('#lobbyNoCam span').textContent = S.localStream ? 'カメラを使えません' : 'カメラは通話中だけ使います';
   el.selfWipe.querySelector('video').srcObject = S.localStream;
-  el.selfWipe.classList.toggle('mirror', S.mirror);
+  // 外側カメラ（製品を映す）のときは反転しない
+  el.selfWipe.classList.toggle('mirror', S.mirror && realVideoTrack()?.getSettings().facingMode !== 'environment');
   if (S.content.type === 'live') attachStageVideo();
 }
 
@@ -2050,12 +2053,21 @@ function setupToolbar() {
   });
   // カメラ切替：次のカメラへ（スマホなら外側／内側）
   $('#flipBtn').addEventListener('click', async () => {
-    const cams = S.cams || [];
-    if (cams.length < 2) return;
-    const cur = realVideoTrack()?.getSettings().deviceId || S.camId;
-    const i = cams.findIndex((d) => d.deviceId === cur);
-    await switchCamera(cams[(i + 1) % cams.length].deviceId);
+    const t = realVideoTrack();
+    const fm = t && t.getSettings().facingMode;
+    if (fm) {
+      // スマホ：内側 ⇔ 外側
+      await switchCamera('', fm === 'environment' ? 'user' : 'environment');
+    } else {
+      const cams = S.cams || [];
+      if (cams.length < 2) return;
+      const cur = (t && t.getSettings().deviceId) || S.camId;
+      const i = cams.findIndex((d) => d.deviceId === cur);
+      await switchCamera(cams[(i + 1) % cams.length].deviceId);
+    }
     await listDevices();
+    const now = realVideoTrack()?.getSettings().facingMode;
+    if (now) banner(now === 'environment' ? '外側のカメラに切り替えました' : '内側のカメラに切り替えました', 2500);
   });
   $('#settingsBtn').addEventListener('click', async () => { await listDevices(); $('#settingsDlg').showModal(); });
   $('#setCam').addEventListener('change', (e) => switchCamera(e.target.value));

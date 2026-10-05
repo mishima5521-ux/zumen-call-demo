@@ -333,4 +333,5 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   .toolbar .grp:nth-child(4) > * { order: 2; }
   #liveRemoteBtn { order: 0 !important; }
   #fullBtn { order: 1 !important; }
+  #flipBtn { order: 1 !important; }
 }
