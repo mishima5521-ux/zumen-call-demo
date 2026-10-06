@@ -524,3 +524,38 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 .ai-pick b { font-size: 18px; }
 .ai-pick small { font-size: 12px; color: var(--muted); font-weight: 400; }
 .ai-pick.on { border-color: var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
+
+/* 打ち合わせ部屋 */
+.meet-steps { margin: 6px 0 10px; padding-left: 1.4em; display: flex; flex-direction: column; gap: 14px; }
+.meet-steps > li > b { font-size: 16px; }
+.meet-steps .meet-link, .meet-steps .row { margin-top: 6px; }
+#emptyHint.room-hide { display: none; }
+.room-card {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 15;
+  width: min(560px, calc(100% - 32px)); max-height: calc(100% - 24px); overflow: auto;
+  background: var(--paper); color: var(--text); border: 3px solid var(--ink); padding: 18px 20px;
+  box-shadow: 8px 8px 0 rgba(26,23,20,.35); display: flex; flex-direction: column; gap: 8px;
+}
+.room-card[hidden] { display: none; }
+.room-card h3 { margin: 0; font-size: 20px; }
+.room-card p { margin: 0; }
+.wait-panel {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 40;
+  width: min(460px, calc(100% - 24px)); background: var(--paper); color: var(--text);
+  border: 3px solid var(--accent); box-shadow: 0 8px 28px rgba(0,0,0,.45); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; animation: waitIn .25s ease-out;
+}
+.wait-panel[hidden] { display: none; }
+.wait-panel > b { font-size: 17px; color: var(--accent-dark); }
+.wait-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.wait-panel li { display: flex; align-items: center; gap: 8px; }
+.wait-panel li b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.wait-panel li button { min-height: 44px; min-width: 76px; }
+.wait-panel small { color: var(--muted); }
+@keyframes waitIn { from { transform: translate(-50%, -20px); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }
+.wait-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wait-name b { font-size: 16px; overflow-wrap: anywhere; }
+.wait-name small { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.wait-panel li button:disabled { opacity: .55; }
+.room-now { font-weight: 700; color: var(--accent-dark); }
+.wait-panel li .wait-name b { white-space: normal; overflow: visible; text-overflow: clip; }

@@ -143,6 +143,8 @@ const S = {
   door: null,            // まとめ役：社外の方を受け入れる入口（毎回ランダムな ID）
   tickets: new Map(),    // まとめ役：入口から入ってよい社外の方の合言葉
   doorWait: new Map(),   // 参加者：入口を案内するのを待っている社外の方の接続
+  room: null,            // 打ち合わせ部屋（社外の方との打ち合わせ）を開いている { label }。相手が抜けても部屋に残って待つ
+  waiting: [],           // 入室待ちの社外の方 [{ c, label, viaHub }]
 };
 if (QS.has('debug')) window.__zumen = S; // 動作確認用
 
@@ -414,7 +416,8 @@ async function applyQuality() {
     if (!sender.getParameters) continue;
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-    p.encodings[0].maxBitrate = S.share ? (group ? 2_500_000 : Math.max(q.br, 6_000_000)) : featured ? q.br : 600_000;
+    // 複数人のときは送り先の数だけ回線を使うので、大きく映されていても1人あたり 2Mbps まで
+    p.encodings[0].maxBitrate = S.share ? (group ? 2_000_000 : Math.max(q.br, 6_000_000)) : featured ? (group ? Math.min(q.br, 2_000_000) : q.br) : 600_000;
     p.encodings[0].scaleResolutionDownBy = S.share || featured ? 1 : Math.max(1, w / 640);
     p.degradationPreference = S.share ? 'maintain-resolution' : q.deg;
     try { await sender.setParameters(p); }
@@ -539,12 +542,17 @@ function onIncoming(c) {
     if (pidOf(S.meId) < c.peer) { c.send({ t: 'busy', glare: true }); setTimeout(() => c.close(), 800); return; }
     abandonOutgoing(o);
   }
+  // 打ち合わせ部屋で1人で待っているだけなら、部屋を閉じて社内からの電話を受ける
+  if (S.inCall && S.room && !S.partnerUid && !S.extras.size && !S.waiting.length && !S.docs.size && !S.ringing && !S.outgoing) {
+    hangup(null, false);
+    lobbyMsg(`${name} から着信があったため、打ち合わせ部屋を閉じました（招待リンクはそのまま使えます）`);
+  }
   if (S.inCall || S.ringing || S.outgoing) {
     c.send({ t: 'busy' });
     setTimeout(() => c.close(), 800);
     setFlag(from.id, 'missed');
     addChat(from.id, { from: 'sys', text: `着信がありました（${S.inCall ? '通話中' : '取り込み中'}のため出られませんでした）` });
-    if (S.inCall) banner(`${name} から着信がありました（通話中のため出られませんでした）`, 10_000);
+    if (S.inCall) banner(S.room && !S.partnerUid && !S.extras.size ? `${name} から着信がありました（図面を開いた打ち合わせ部屋で待っているため、出られませんでした。部屋を閉じると受けられます）` : `${name} から着信がありました（通話中のため出られませんでした）`, 10_000);
     return;
   }
   ring(c, name, from, { invite: !!md.invite, party: Array.isArray(md.party) ? md.party.map((x) => cleanText(x, 40)).filter(Boolean).slice(0, MAX_PARTY) : [] });
@@ -573,7 +581,15 @@ function endRinging(r) {
 function missed(r) {
   endRinging(r);
   const t = hhmm();
-  if (r.knock) { if (!r.declined) lobbyMsg(`${r.name} の入室の希望に応答しませんでした（${t}）`); return; }
+  if (r.knock) {
+    if (!r.declined) {
+      lobbyMsg(`${r.name} の入室の希望に応答しませんでした（${t}）`);
+      // 社外の方にも「応答がなかった」と伝える（申し込み中のまま待たせない）
+      try { r.c.send({ t: 'reject', reason: 'timeout' }); } catch { /* 閉じている */ }
+      setTimeout(() => { try { r.c.close(); } catch { /* 閉じている */ } }, 800);
+    }
+    return;
+  }
   setFlag(r.from.id, 'missed');
   addChat(r.from.id, { from: 'sys', text: '不在着信' });
   lobbyMsg(`不在着信：${r.name}（${t}）`);
@@ -590,6 +606,7 @@ async function answer() {
   S.remoteName = r.name;
   S.external = !!r.knock;
   S.callName = r.knock && S.meeting ? S.meeting.hostName : '';
+  S.room = r.knock ? { label: (S.meeting && S.meeting.label) || '' } : null;
   enterCall();
   await ensureMedia();
   if (!S.inCall) { try { r.c.send({ t: 'bye' }); } catch { /* 閉じている */ } setTimeout(() => r.c.close(), 500); return; }
@@ -634,7 +651,7 @@ function acceptConn(c) {
   broadcastRoster();
 }
 function onCallConnected() {
-  if (isGroup()) updatePartyStatus(); else setStatus(`${S.remoteName} と通話中`, 'ok');
+  updatePartyStatus();
   if (!S.callStartedAt) S.callStartedAt = Date.now();
   if (S.tr.on) send({ t: 'tr-state', on: true }); // 回線断から戻ったら相手の文字起こしも再開
   S.reconnectUntil = 0;
@@ -674,7 +691,8 @@ function dial(peerId, name, reconnect, member = memberByPid(peerId)) {
   const o = { c, peerId, name, reconnect, member };
   S.outgoing = o;
   if (!c) { endOutgoing(o, reconnect ? null : `${name} につながりませんでした`, 'net'); return; }
-  o.timer = setTimeout(() => endOutgoing(o, reconnect ? null : `${name} は応答しませんでした`, 'timeout'), reconnect ? 10_000 : RING_TIMEOUT);
+  // 社外の方の申し込みは、相手が許可するまで長めに待つ（部屋で図面を準備中など）
+  o.timer = setTimeout(() => endOutgoing(o, reconnect ? null : `${name} は応答しませんでした`, 'timeout'), reconnect ? 10_000 : GUEST_MODE ? 10 * 60_000 : RING_TIMEOUT);
   // 社外のネットワークで直接つながれない（ICE 失敗）ときは、別の回線を勧める
   c.on('iceStateChanged', (st) => { if (st === 'failed') o.iceFailed = true; });
   // 社外の方：相手につながり、すぐに断られなかったら「申し込み中」の画面を出す
@@ -685,6 +703,7 @@ function dial(peerId, name, reconnect, member = memberByPid(peerId)) {
   }
   c.on('data', (m) => {
     if (S.outgoing !== o || !m) return;
+    if (m.t === 'ping') { try { c.send({ t: 'pong' }); } catch { /* 閉じている */ } return; } // 入室待ちの生存確認
     if (m.t === 'accept') { G.ticket = null; onAccepted(o, m); }
     else if (m.t === 'redirect' && GUEST_MODE && !reconnect && typeof m.door === 'string' && m.door.length <= 64 && typeof m.ticket === 'string') {
       // 許可された → 打ち合わせのまとめ役の入口に入り直す
@@ -699,10 +718,10 @@ function dial(peerId, name, reconnect, member = memberByPid(peerId)) {
       if (m.reason === 'callback' && member) {
         if (m.msg) addChat(member.id, { ...m.msg, from: 'them' });
         endOutgoing(o, `${name}：「${CALLBACK_TEXT}」`, 'reject');
-      } else endOutgoing(o, `${name} は今は出られません`, 'reject');
+      } else endOutgoing(o, `${name} は今は出られません`, m.reason === 'closed' || m.reason === 'timeout' || m.reason === 'ended' ? m.reason : 'reject');
     } else if (m.t === 'busy') {
       if (m.glare) { clearTimeout(o.timer); S.outgoing = null; return; } // 相手からの着信として受ける
-      endOutgoing(o, `${name} は通話中です`, 'busy');
+      endOutgoing(o, `${name} は通話中です`, m.full ? 'full' : 'busy');
     } else if (m.t === 'bye' && reconnect) {
       clearTimeout(o.timer);
       S.outgoing = null;
@@ -788,9 +807,10 @@ function enterCall() {
   S.inCall = true;
   if (GUEST_MODE) { S.external = true; $('#guest').hidden = true; }
   S.extChat = [];
-  $('#leaveBtn').textContent = GUEST_MODE ? '退室する' : '通話を終了';
+  $('#leaveBtn').textContent = GUEST_MODE ? '退室する' : S.room ? '部屋を閉じる' : '通話を終了';
   $('#saveBtn').classList.toggle('guest-hide', GUEST_MODE); // 社外の方には「保存」を出さない
   $('#recordBtn').classList.toggle('guest-hide', GUEST_MODE);
+  $('#addBtn').textContent = GUEST_MODE ? '参加者' : '人を追加';
   buildQuick();
   el.lobby.hidden = true;
   el.room.hidden = false;
@@ -822,6 +842,9 @@ function hangup(msg, notifyPeer = true) {
   if (o && o.reconnect) { clearTimeout(o.timer); S.outgoing = null; if (o.c) { try { o.c.close(); } catch { /* 既に閉じている */ } } }
   setRemoteStream(null);
   resetParty();
+  clearWaiting();
+  clearTimeout(roomIdleTimer);
+  S.room = null;
   endShare();
   // 通話中のデータを片付ける（図面はメモリから消す）
   for (const d of S.docs.values()) { try { d.pdf && d.pdf.destroy(); d.img && d.img.close && d.img.close(); } catch { /* 解放済み */ } }
@@ -865,11 +888,13 @@ function onConnClosed(c) {
   if (S.call) { try { S.call.close(); } catch { /* 既に閉じている */ } S.call = null; }
   setRemoteStream(null);
   S.pointers.delete('remote');
+  if (S.role === 'host') closeRelaysOf(S.partnerUid);
   if (S.role === 'host') {
-    if (S.extras.size) { banner(`${S.remoteName} との回線が切れました。再接続を待っています`, 6000); broadcastRoster(); }
+    if (S.extras.size || S.room) { banner(`${S.remoteName} との回線が切れました。再接続を待っています`, 6000); broadcastRoster(); updatePartyStatus(); }
     else setStatus(`回線が切れました。相手からの再接続を待っています（${HOST_WAIT / 1000}秒で自動終了）`, 'bad');
     clearTimeout(S.hostWaitTimer);
-    S.hostWaitTimer = setTimeout(() => primaryGone(`${S.remoteName} との接続が戻らなかったため、通話を終了しました`), HOST_WAIT);
+    const nm = S.remoteName;
+    S.hostWaitTimer = setTimeout(() => primaryGone(S.room ? `${nm} との接続が戻りませんでした（${nm} は同じリンクから入り直せます）` : `${nm} との接続が戻らなかったため、通話を終了しました`), HOST_WAIT);
   } else {
     setStatus('回線が切れました。再接続しています…', 'bad');
     if (!S.reconnectUntil) S.reconnectUntil = Date.now() + GUEST_RETRY;
@@ -1787,7 +1812,7 @@ function onMessage(m, c = S.conn) {
   switch (m.t) {
     case 'bye':
       if (S.role === 'host' && c !== S.conn) { const X = extraByConn(c); if (X) removeExtra(X, `${X.name} が退出しました`); break; }
-      if (S.role === 'host' && S.extras.size) { primaryGone(`${S.remoteName} が退出しました`); break; }
+      if (S.role === 'host' && (S.extras.size || S.room)) { primaryGone(`${S.remoteName} が退出しました`); break; }
       hangup(!S.external ? `${S.remoteName} が通話を終了しました`
         : GUEST_MODE ? `${S.remoteName} が打ち合わせを終了しました。このページは閉じてかまいません。` : `${S.remoteName} が退室しました`, false);
       break;
@@ -1835,8 +1860,9 @@ function onMessage(m, c = S.conn) {
     case 'clear': if (isKey(m.key)) clearStrokes(m.key, false); break;
     case 'snap-req':
       // 複数人のときは、撮ってほしい人あて。まとめ役は、その人に渡す
-      if (S.role === 'host' && isUid(m.to) && m.to !== S.uid) { const t = linkOfUid(m.to); if (t) sendTo(t, { t: 'snap-req', from }); break; }
-      onSnapRequest(fromName);
+      if (S.role === 'host' && isUid(m.to) && m.to !== S.uid) { const t = linkOfUid(m.to); if (t) sendTo(t, { t: 'snap-req', from, ext: !isInternalLink(c) }); break; }
+      // 社外の方からの依頼（または社外の方がいる打ち合わせ）では、必ず撮ってよいか確かめる
+      onSnapRequest(fromName, !!m.ext || (S.role === 'host' && !isInternalLink(c)));
       break;
     case 'doc-req': {
       // 送り直しの依頼は 1 つの図面につき 10 秒に 1 回まで（相手ごと）
@@ -1849,7 +1875,14 @@ function onMessage(m, c = S.conn) {
     case 'pv': onPreview(m); break;
     case 'doc-close': if (isId(m.id)) closeDoc(m.id, { fromRemote: true }); break;
     case 'share': banner(m.on ? `${fromName} が画面を共有しています` : `${fromName} が画面の共有を終えました`, 5000); break;
-    case 'msg': if (typeof m.text === 'string') banner(m.text.slice(0, 200)); break;
+    case 'msg': {
+      if (typeof m.text !== 'string') break;
+      // まとめ役以外の人（社外の方を含む）からの知らせには、送った人の名前を付ける
+      const fromHub = S.role !== 'host' && from === S.partnerUid;
+      const named = !fromHub && (isGroup() || (S.role === 'host' && S.external));
+      banner((named ? `${fromName}：` : '') + m.text.slice(0, 200));
+      break;
+    }
     case 'tr': if (m.line && typeof m.line.text === 'string') addTrLine(isGroup() && from ? from : 'them', fromName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
     case 'tr-state':
       if (m.on && !S.tr.on) { startTr(false); banner(`${fromName} が文字起こしを開始しました。話した内容が${TR_USE}`, 6000); }
@@ -1860,6 +1893,7 @@ function onMessage(m, c = S.conn) {
 }
 
 function onHello(m, link = S.conn) {
+  if (link) link._hello = true;
   applyHostTheme(m);
   const extra = S.role === 'host' && link !== S.conn;
   // 社外の方の名前は入室時のもの（〇〇様）を使い続ける。2人目以降の参加者の名前も、まとめ役が決めたもの
@@ -2218,7 +2252,7 @@ function setContent(c, { send: doSend = true, view = null, ts = null } = {}) {
   if (c.type === 'doc') sendPreview(S.docs.get(c.docId), c.page); // 相手がページを送っても、その見本を返す
   // 自分のカメラが大きく映されたら自動で高画質に、外れたら元に戻す
   const meLive = c.type === 'live' && isMeWho(c.who);
-  if (meLive && S.quality === 'std') setQuality('hi', { auto: true });
+  if (meLive && S.quality === 'std' && !isGroup()) setQuality('hi', { auto: true }); // 複数人のときは回線を使いすぎないよう自動では上げない
   else if (!meLive && S.autoBoosted) setQuality('std');
   else if (isGroup()) applyQuality();
   partyMedia();
@@ -2780,8 +2814,8 @@ async function takeSnapshot() {
   sendDoc(doc);
   setContent({ type: 'doc', docId: doc.id, page: 1 });
 }
-function onSnapRequest(who = S.remoteName) {
-  if (!S.external) { banner(`${who} の依頼で撮影します`); takeSnapshot(); return; }
+function onSnapRequest(who = S.remoteName, ext = false) {
+  if (!S.external && !ext) { banner(`${who} の依頼で撮影します`); takeSnapshot(); return; }
   askConfirm(`${who} から、こちらのカメラで高画質の写真を撮って共有するよう依頼がありました。撮影しますか？`, '撮影する').then((ok) => {
     if (!S.inCall) return;
     if (ok) takeSnapshot();
@@ -3291,7 +3325,9 @@ function setupToolbar() {
   $('#syncBtn').addEventListener('click', (e) => { S.sync = !S.sync; e.currentTarget.classList.toggle('on', S.sync); if (S.sync) viewChanged(); });
   $('#undoBtn').addEventListener('click', undo);
   $('#clearBtn').addEventListener('click', async () => { if (S.cur && await askConfirm('このページの書き込みを全部消します（相手の画面からも消えます）。', '全部消す')) clearStrokes(S.cur.key); });
+  const nobody = () => { if (S.room && !S.partnerUid && !S.extras.size) { banner('まだだれも入室していません', 3000); return true; } return false; };
   $('#liveRemoteBtn').addEventListener('click', async () => {
+    if (nobody()) return;
     if (!isGroup()) { showLive(otherWho()); return; }
     const uid = await pickPerson('だれのカメラを大きく映しますか？');
     if (uid) showLive(uid);
@@ -3304,6 +3340,7 @@ function setupToolbar() {
   setupDropOpen();
   $('#snapRemoteBtn').addEventListener('click', async () => {
     if (DEMO) { takeSnapshot(); return; }
+    if (nobody()) return;
     if (!links().length) { banner('相手とつながっていません'); return; }
     if (isGroup()) {
       const uid = await pickPerson('だれのカメラで撮影しますか？');
@@ -3374,8 +3411,11 @@ function setupToolbar() {
   $('#mirrorChk').addEventListener('change', (e) => { S.mirror = e.target.checked; store.set('mirror', S.mirror); updateWipes(); });
   $('#leaveBtn').addEventListener('click', async () => {
     const hub = S.role === 'host' && S.extras.size;
-    const q = GUEST_MODE ? '打ち合わせから退室しますか？' : hub ? `通話を終了しますか？（あなたが打ち合わせのまとめ役なので、${S.party.list.length}人全員の通話が終わります）` : isGroup() ? '打ち合わせから抜けますか？（ほかの人の打ち合わせは続きます）' : '通話を終了しますか？';
-    if (await askConfirm(q, GUEST_MODE ? '退室する' : '終了する')) hangup();
+    const others = S.extras.size + (S.partnerUid ? 1 : 0);
+    const wait = S.waiting.length ? `入室待ちの${S.waiting.map((w) => w.label).join('、')}もお断りになります。` : '';
+    const q0 = GUEST_MODE ? '打ち合わせから退室しますか？' : S.room ? (others ? `部屋を閉じますか？（参加している${others}人の打ち合わせも終わります${wait ? '。' + wait.replace(/。$/, '') : ''}）` : `部屋を閉じますか？（${wait}招待リンクはこのあとも使えます。もう受け付けないときは、待受画面の「このリンクの受付をやめる」を押してください）`) : hub ? `通話を終了しますか？（あなたが打ち合わせのまとめ役なので、${S.party.list.length}人全員の通話が終わります）` : isGroup() ? '打ち合わせから抜けますか？（ほかの人の打ち合わせは続きます）' : '通話を終了しますか？';
+    const q = !S.room && wait ? q0.replace(/？/, `？（${wait}）`) : q0;
+    if (await askConfirm(q, GUEST_MODE ? '退室する' : S.room ? '部屋を閉じる' : '終了する')) hangup(S.room ? '打ち合わせ部屋を閉じました' : undefined);
   });
 
   window.addEventListener('keydown', (e) => {
@@ -3485,6 +3525,7 @@ function onRoster(m) {
 }
 function partyChanged() {
   partyMedia();
+  if (S.waiting.length) renderWaiting();
   updateWipes();
   updatePartyStatus();
   updateChatBadges();
@@ -3493,7 +3534,13 @@ function partyChanged() {
 }
 function updatePartyStatus() {
   if (!S.inCall) return;
-  if (!isGroup()) { if (S.conn && S.conn.open) setStatus(`${S.remoteName} と通話中`, 'ok'); return; }
+  updateRoomCard();
+  if (S.room && !S.partnerUid && !S.extras.size) { setStatus(`打ち合わせ部屋${S.room.label ? `（${S.room.label}）` : ''}：相手の入室を待っています`, 'ok'); return; }
+  if (!isGroup()) {
+    if (S.conn && S.conn.open) setStatus(`${S.remoteName} と${S.external ? '打ち合わせ' : '通話'}中`, 'ok');
+    else if (S.partnerUid && S.role === 'host') setStatus(`${S.remoteName} の回線が切れました。再接続を待っています`, 'bad');
+    return;
+  }
   const names = S.party.list.filter((p) => p.uid !== S.uid).map((p) => p.name + (p.down ? '（再接続待ち）' : ''));
   setStatus(`打ち合わせ中（${S.party.list.length}人）：${names.join('、')}`, 'ok');
   $('#chatBtn').title = '打ち合わせの全員とのチャット';
@@ -3510,6 +3557,16 @@ function groupFormed() {
 // ---- まとめ役：参加者を加える・外す ----
 function acceptExtra(c, { name, member = null, external = false }) {
   if (!S.inCall || S.role !== 'host') return;
+  // 部屋にだれもいないときは、最初の相手として受け入れる（いない「相手」を作らない）
+  if (!S.conn && !S.partnerUid) {
+    clearTimeout(roomIdleTimer);
+    S.partner = c.peer;
+    S.token = secureId(24);
+    S.remoteName = name;
+    acceptConn(c);
+    banner(`${name} が打ち合わせに参加しました`, 4000);
+    return;
+  }
   const X = { uid: newUid(), c, peer: c.peer, name, member, external, token: secureId(24), call: null, stream: null, mesh: '', timer: null };
   S.extras.set(X.uid, X);
   if (S.extras.size === 1) groupFormed();
@@ -3522,6 +3579,7 @@ function acceptExtra(c, { name, member = null, external = false }) {
   addSysGroupChat(`${name} が参加しました`);
 }
 function reacceptExtra(X, c) {
+  closeRelaysOf(X.uid);
   clearTimeout(X.timer);
   X.timer = null;
   const old = X.c;
@@ -3536,6 +3594,7 @@ function reacceptExtra(X, c) {
 }
 // 回線が切れた → しばらく再接続を待つ
 function extraDown(X) {
+  closeRelaysOf(X.uid);
   if (X.call) { try { X.call.close(); } catch { /* 閉じている */ } X.call = null; }
   X.stream = null;
   S.pointers.delete('u:' + X.uid);
@@ -3559,7 +3618,7 @@ function removeExtra(X, msg) {
 // 最初の相手が抜けた：ほかに参加者がいれば、その人を最初の相手にして続ける
 function primaryGone(msg) {
   if (!S.inCall) return;
-  if (!S.extras.size) { hangup(msg, false); return; }
+  if (!S.extras.size) { if (S.room) clearPrimary(msg); else hangup(msg, false); return; }
   const X = [...S.extras.values()].find((x) => x.c && x.c.open) || S.extras.values().next().value;
   const oldUid = S.partnerUid, oldConn = S.conn, oldCall = S.call;
   S.extras.delete(X.uid);
@@ -3672,30 +3731,207 @@ async function joinInvite(r) {
   r.c.on('close', () => { if (S.outgoing === o) endOutgoing(o, '打ち合わせに参加できませんでした', 'net'); });
   r.c.send({ t: 'join' });
 }
-// 打ち合わせ中に、招待リンクから入室の希望が届いた
+// 打ち合わせ中に、招待リンクから入室の希望が届いた → 画面の上の「入室待ち」に並べる
 function knockInCall(c, label, viaHub = false) {
-  startTone('chat');
-  notify(`${label} が入室を希望しています`, '図面テレビ電話');
-  c.on('close', () => { if (c._asking) banner(`${label} は入室の申し込みを取り消しました`, 5000); });
-  c._asking = true;
-  askConfirm(`${label} が招待リンクから入室を希望しています。この打ち合わせに入ってもらいますか？（今 ${partyCount()}人。最大${MAX_PARTY}人）`, '入室を許可').then((ok) => {
-    c._asking = false;
-    if (!S.inCall || !c.open) return;
-    if (ok && viaHub) {
-      const reqId = rid();
-      S.doorWait.set(reqId, c);
-      send({ t: 'door-req', reqId, hostName: S.meeting ? S.meeting.hostName : '' });
-      setTimeout(() => { if (S.doorWait.get(reqId) === c) { S.doorWait.delete(reqId); try { c.send({ t: 'reject' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); } }, 15_000);
-      return;
-    }
-    if (ok && partyCount() < MAX_PARTY) {
-      if (!S.external) { S.external = true; if (S.meeting && !S.callName) S.callName = S.meeting.hostName; buildQuick(); }
-      acceptExtra(c, { name: label, external: true });
-    } else {
-      try { c.send({ t: 'reject' }); } catch { /* 閉じている */ }
-      setTimeout(() => c.close(), 800);
-    }
+  if (S.waiting.length >= 10) { try { c.send({ t: 'busy' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); return; }
+  const w = { c, label, viaHub, pong: Date.now() };
+  S.waiting.push(w);
+  c.on('data', (m) => {
+    if (!m) return;
+    if (m.t === 'cancel') { w.cancelled = true; try { c.close(); } catch { /* 閉じている */ } if (S.waiting.includes(w)) { dropWaiting(w); banner(`${label} が入室の申し込みをやめました`, 6000); } }
+    else if (m.t === 'pong') w.pong = Date.now();
   });
+  c.on('close', () => {
+    if (!S.waiting.includes(w)) return;
+    dropWaiting(w);
+    banner(w.cancelled ? `${label} が入室の申し込みをやめました` : `${label} との接続が切れました（もう一度申し込むと、ここに出ます）`, 6000);
+  });
+  notify(`${label} が入室を希望しています`, '図面テレビ電話');
+  startTone('chat');
+  renderWaiting();
+}
+// 入室待ちの方が、まだつながっているかを確かめる（タブを閉じた方が一覧に残らないように）
+function checkWaiting() {
+  const now = Date.now();
+  for (const w of [...S.waiting]) {
+    if (!w.c.open || now - w.pong > 15_000) {
+      dropWaiting(w);
+      try { w.c.close(); } catch { /* 閉じている */ }
+      banner(`${w.label} との接続が切れました（もう一度申し込むと、ここに出ます）`, 6000);
+      continue;
+    }
+    try { w.c.send({ t: 'ping' }); } catch { /* 閉じている */ }
+  }
+}
+function dropWaiting(w) {
+  S.waiting = S.waiting.filter((x) => x !== w);
+  renderWaiting();
+}
+// 許可する（ok=true）／お断りする
+async function answerWaiting(w, ok) {
+  if (!S.waiting.includes(w)) return;
+  dropWaiting(w);
+  const { c, label } = w;
+  if (!S.inCall || !c.open) return;
+  const reject = () => { try { c.send({ t: 'reject' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); };
+  if (!ok) { reject(); return; }
+  if (partyCount() >= MAX_PARTY) { S.waiting.push(w); renderWaiting(); return; } // 満員のときは許可できない（待ってもらう）
+  // 図面を開いているときは、見せてよいかを確かめる（前の相手の図面が、次の相手に渡らないように）
+  const n = S.docs.size;
+  if (n && !(await askConfirm(`許可すると、いま開いている図面・写真（${n}件）が ${label} にも表示・送信されます。見せてよいですか？（見せたくないものは、先にタブの × で閉じてから許可してください）`, '見せてよい・許可'))) {
+    if (c.open && S.inCall) { S.waiting.unshift(w); renderWaiting(); }
+    return;
+  }
+  if (!S.inCall || !c.open) {
+    // 確かめている間に部屋を閉じた → 相手にも伝える
+    if (c.open) { try { c.send({ t: 'reject', reason: 'closed' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); }
+    return;
+  }
+  if (w.viaHub) {
+    // まとめ役でないとき：まとめ役の入口へ案内する
+    const reqId = rid();
+    S.doorWait.set(reqId, c);
+    send({ t: 'door-req', reqId, hostName: S.meeting ? S.meeting.hostName : '' });
+    setTimeout(() => { if (S.doorWait.get(reqId) === c) { S.doorWait.delete(reqId); reject(); } }, 15_000);
+    return;
+  }
+  admitGuest(c, label);
+}
+// 社外の方を打ち合わせに入れる（部屋にだれもいなければ最初の相手として、いれば2人目以降として）
+function admitGuest(c, label) {
+  clearTimeout(roomIdleTimer);
+  // 許可したのに相手が来ない（直前に閉じていた等）→ 外して、部屋の待ち状態に戻す
+  setTimeout(() => {
+    if (!S.inCall || c._hello) return;
+    if (c === S.conn) primaryGone(`${label} とつながりませんでした`);
+    else { const X = extraByConn(c); if (X) removeExtra(X, `${label} とつながりませんでした`); }
+  }, 20_000);
+  if (!S.external) { S.external = true; if (S.meeting && !S.callName) S.callName = S.meeting.hostName; buildQuick(); }
+  if (!S.conn && !S.partnerUid && !S.extras.size) {
+    S.partner = c.peer;
+    S.token = secureId(24);
+    S.remoteName = label;
+    acceptConn(c);
+    return;
+  }
+  acceptExtra(c, { name: label, external: true });
+}
+function clearWaiting() {
+  const reason = S.room ? 'closed' : 'ended';
+  for (const w of S.waiting) { try { w.c.send({ t: 'reject', reason }); } catch { /* 閉じている */ } const c = w.c; setTimeout(() => c.close(), 800); }
+  S.waiting = [];
+  renderWaiting();
+}
+let waitChime = null;
+function renderWaiting() {
+  const box = $('#waitPanel');
+  if (!box) return;
+  const list = S.waiting;
+  box.hidden = !list.length;
+  const ul = $('#waitList');
+  ul.innerHTML = '';
+  $('#waitTitle').textContent = `入室待ち（${list.length}人）`;
+  const full = partyCount() >= MAX_PARTY;
+  for (const w of list) {
+    const li = document.createElement('li');
+    // 名前と会社名を2行に分けて、全部見せる（だれかを確かめてから許可できるように）
+    const nm = document.createElement('span');
+    nm.className = 'wait-name';
+    const mm = /^(.*?)（(.*)）$/.exec(w.label);
+    const b1 = document.createElement('b');
+    b1.textContent = mm ? mm[1] : w.label;
+    nm.appendChild(b1);
+    if (mm) { const sm = document.createElement('small'); sm.textContent = mm[2]; nm.appendChild(sm); }
+    const yes = document.createElement('button');
+    yes.type = 'button'; yes.className = 'primary'; yes.textContent = full ? '満員' : '許可';
+    yes.disabled = full;
+    yes.addEventListener('click', () => answerWaiting(w, true));
+    const no = document.createElement('button');
+    no.type = 'button'; no.className = 'ghost'; no.textContent = 'お断り';
+    no.addEventListener('click', () => answerWaiting(w, false));
+    li.append(nm, yes, no);
+    ul.appendChild(li);
+  }
+  const me = partyCount();
+  $('#waitNote').textContent = full ? `部屋にいる人：${me}人で満員です（最大${MAX_PARTY}人）。だれかが抜けると「許可」を押せます` : `部屋にいる人：${me}人${me === 1 ? '（あなた）' : ''}／最大${MAX_PARTY}人`;
+  // 待っている人がいる間は、ときどき知らせる
+  clearInterval(waitChime);
+  waitChime = list.length ? setInterval(() => startTone('chat'), 6000) : null;
+  if (list.length) flashTitle(`${list[0].label} が入室待ちです`); else flashTitle(null);
+}
+
+// ---- 打ち合わせ部屋：相手が来る前に入って待つ ----
+async function openRoom() {
+  const mt = S.meeting;
+  if (!mt || S.inCall || S.ringing || S.outgoing) return;
+  unlockSound();
+  S.role = 'host';
+  S.external = true;
+  S.callName = mt.hostName;
+  S.remoteName = '相手';
+  S.partner = null; S.token = null;
+  S.room = { label: mt.label || '' };
+  enterCall();
+  await ensureMedia();
+  if (!S.inCall) return;
+  if (!S.uid) S.uid = newUid();
+  S.party = { id: S.party.id || secureId(12), hub: S.uid, list: rosterList(false) };
+  updatePartyStatus();
+  updateToolbar();
+  armRoomIdle();
+}
+// 部屋に残ったまま、最初の相手との接続を片付ける（だれもいなくなった）
+function clearPrimary(msg) {
+  const conn = S.conn, call = S.call, uid = S.partnerUid;
+  clearTimeout(S.hostWaitTimer);
+  S.conn = null; S.call = null; S.partner = null; S.token = null; S.partnerUid = ''; S.primaryMesh = '';
+  S.remoteName = '相手';
+  setTimeout(() => { try { call && call.close(); conn && conn.close(); } catch { /* 閉じている */ } }, 300);
+  S.pointers.delete('remote');
+  S.pointers.delete('u:' + uid);
+  setRemoteStream(null);
+  if (S.content.type === 'live' && !isMeWho(S.content.who)) setContent({ type: 'none' }, { send: false });
+  S.party.list = rosterList(false);
+  S.room.emptied = true; // 「全員退室しました」の案内を出す
+  partyChanged();
+  if (msg) banner(msg, 8000);
+  armRoomIdle();
+}
+// だれもいない部屋は、しばらくだれも来なければ自動で閉じる（社内からの電話を受けられなくならないように）
+const ROOM_IDLE = 20 * 60_000;
+let roomIdleTimer = null;
+function armRoomIdle() {
+  clearTimeout(roomIdleTimer);
+  roomIdleTimer = setTimeout(() => {
+    if (!S.inCall || !S.room || S.partnerUid || S.extras.size) return;
+    if (S.waiting.length) { armRoomIdle(); return; } // 入室待ちの方がいる間は閉じない
+    hangup('だれも来なかったため、打ち合わせ部屋を閉じました（招待リンクはそのまま使えます）', false);
+  }, ROOM_IDLE);
+}
+// 図面・写真・書き込みを全部片付ける（次の相手に前の図面を見せないように）
+function clearAllDocs() {
+  for (const d of S.docs.values()) { try { d.pdf && d.pdf.destroy(); d.img && d.img.close && d.img.close(); } catch { /* 解放済み */ } }
+  S.docs.clear(); S.strokes.clear(); S.strokeById.clear(); S.previews.clear(); S.myStack = [];
+  lowCache.clear();
+  setContent({ type: 'none' }, { send: false });
+  renderTabs();
+  updateToolbar();
+}
+// だれもいない部屋：招待リンクと、何をすればよいかを画面の真ん中に出す
+function updateRoomCard() {
+  const card = $('#roomCard');
+  if (!card) return;
+  const alone = !!S.room && S.inCall && !S.partnerUid && !S.extras.size;
+  const emptied = alone && !!S.room.emptied;
+  if (S.room && !alone) S.room.emptied = false;
+  card.hidden = !(alone && (S.content.type === 'none' || emptied));
+  $('#roomTitle').textContent = emptied ? '全員退室しました' : '打ち合わせ部屋を開いています';
+  $('#roomEmptied').hidden = !emptied;
+  $('#roomClearBtn').hidden = !S.docs.size;
+  $('#roomNow').textContent = 'いま：相手の入室を待っています';
+  el.emptyHint.classList.toggle('room-hide', !!S.room);
+  if (alone && S.meeting) $('#roomLink').value = meetLink(S.meeting);
+  $('#roomLinkRow').hidden = !S.meeting;
 }
 
 // ---- 全員のチャット ----
@@ -3800,11 +4036,14 @@ function meshCheck() {
   for (const [uid, v] of [...S.mesh]) if (!v.stream && now - v.at > 12_000) dropMesh(uid);
   for (const p of meshOthers()) {
     if (p.down) { S.meshWait.delete(p.uid); continue; }
-    const ok = (S.mesh.get(p.uid) || {}).stream || (S.relays.get(p.uid) || {}).stream;
+    // 映像が実際に届いているか（止まった古い映像は数えない）
+    const live = (st) => !!st && st.getTracks().some((t) => t.readyState === 'live');
+    const ok = live((S.mesh.get(p.uid) || {}).stream) || live((S.relays.get(p.uid) || {}).stream);
     if (ok) { S.meshWait.delete(p.uid); continue; }
-    const w = S.meshWait.get(p.uid) || { since: now, asked: false };
+    const w = S.meshWait.get(p.uid) || { since: now, askedAt: 0 };
     S.meshWait.set(p.uid, w);
-    if (!w.asked && now - w.since > 20_000) { w.asked = true; send({ t: 'mesh-fail', uid: p.uid }); }
+    // 20秒つながらなければ中継を頼む（届かなければ30秒ごとに頼み直す）
+    if (now - w.since > 20_000 && now - w.askedAt > 30_000) { w.askedAt = now; dropRelay(p.uid); send({ t: 'mesh-fail', uid: p.uid }); }
   }
 }
 function acceptRelay(call, uid) {
@@ -3865,6 +4104,7 @@ async function openDoorFor(c, m) {
   const id = await ensureDoor();
   if (!id || !S.inCall) { sendTo(c, { t: 'door', reqId: m.reqId }); return; }
   const ticket = secureId(20);
+  for (const [k, exp] of [...S.tickets]) if (exp < Date.now()) S.tickets.delete(k);
   S.tickets.set(ticket, Date.now() + 60_000);
   const hn = cleanText(m.hostName, 40);
   if (hn && !S.callName) S.callName = hn;
@@ -3977,7 +4217,7 @@ function renderPartyDlg() {
   const d = $('#partyDlg');
   if (!d) return;
   const list = isGroup() || S.party.list.length ? S.party.list : [];
-  const people = list.length ? list.map((p) => ({ name: p.name + (p.uid === S.uid ? '（自分）' : '') + (p.uid === S.party.hub ? '・まとめ役' : '') + (p.down ? '・再接続待ち' : '') }))
+  const people = list.length ? list.map((p) => ({ name: p.name + (p.uid === S.uid ? '（自分）' : '') + (p.uid === S.party.hub ? (GUEST_MODE ? '・主催' : '・まとめ役') : '') + (p.down ? '・再接続待ち' : '') }))
     : [{ name: `${myCallName()}（自分）` }, { name: S.remoteName }];
   const n = Math.max(people.length, partyCount());
   $('#partyCount').textContent = `${people.length}人（最大${MAX_PARTY}人）`;
@@ -4015,12 +4255,12 @@ function renderPartyDlg() {
   const copy = $('#partyCopyBtn');
   copy.hidden = true;
   if (S.role === 'host' && S.meeting) {
-    hint.textContent = `社外の方は、招待リンク（${S.meeting.label || '招待リンク'}）から入室を申し込むと、この画面に確認が出ます。「入室を許可」すると参加できます。`;
+    hint.textContent = `社外の方は、招待リンク（${S.meeting.label || '招待リンク'}）から申し込むと、画面の上の「入室待ち」に名前が出ます。「許可」を押すと参加します。`;
     copy.hidden = false;
   } else if (S.role === 'host' && !GUEST_MODE) {
     hint.textContent = '社外の方を入れるときは、待受画面の「社外の方との打ち合わせ」で招待リンクを作って送ってください（打ち合わせ中に作ることはできません）。';
   } else {
-    hint.textContent = GUEST_MODE ? 'ほかの方の参加は、招待した側が受け付けます。' : `社外の方の参加は、まとめ役（${S.remoteName}）の招待リンクから受け付けます。`;
+    hint.textContent = GUEST_MODE ? 'ほかの方の参加は、主催の方が受け付けます。' : `社外の方の参加は、招待リンクから受け付けます（申し込みは、まとめ役の ${S.remoteName} の画面などの「入室待ち」に出ます）。`;
   }
 }
 // 自分が社内の人か（社外の方との打ち合わせに参加している社内の人も、社内の人を呼べる）
@@ -4172,6 +4412,7 @@ function meetWatchdog() {
   else if (mt.peer.disconnected) { try { mt.peer.reconnect(); } catch { mt.peer.destroy(); } }
 }
 // 招待リンクからの入室の希望
+const fullNoticeAt = new Map();
 function onKnock(c, door = false) {
   const md = c.metadata || {};
   if (md.type !== 'join') { c.close(); return; }
@@ -4197,10 +4438,22 @@ function onKnock(c, door = false) {
     } else { try { c.send({ t: 'reject' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); }
     return;
   }
-  // 打ち合わせ中でも、まとめ役なら途中から入ってもらえる（最大6人）
-  if (S.inCall && S.role === 'host' && !S.ringing && partyCount() < MAX_PARTY) { knockInCall(c, label); return; }
+  // 打ち合わせ中なら、画面の上の「入室待ち」に並べる（最大6人）。
+  // 図面を開いたまま許可するときは「見せてよいか」を確かめる。社内どうしの通話なら、相手にも知らせる
+  const extMeeting = S.inCall && !S.ringing;
+  const count = S.role === 'host' ? partyCount() : Math.max(2, S.party.list.length);
+  if (extMeeting && count >= MAX_PARTY) {
+    try { c.send({ t: 'busy', full: true }); } catch { /* 閉じている */ }
+    setTimeout(() => c.close(), 800);
+    if (fullNoticeAt.get(label) || 0) { /* 少し前に知らせた */ } else banner(`${label} が入室を希望しましたが、満員のため待ってもらっています（最大${MAX_PARTY}人）`, 8000);
+    fullNoticeAt.set(label, 1); setTimeout(() => fullNoticeAt.delete(label), 60_000);
+    return;
+  }
+  // 一緒にいる社内の人にも知らせる（社外の方には送らない）
+  if (extMeeting && S.role === 'host') for (const l of links()) if (isInternalLink(l) && memberByPid(l.peer)) sendTo(l, { t: 'msg', text: `社外の ${label} が入室を待っています（${S.name} の画面で許可・お断りを選びます）` });
+  if (extMeeting && S.role === 'host') { knockInCall(c, label); return; }
   // まとめ役でないときは、確認してから、まとめ役の入口へ案内する
-  if (S.inCall && S.role === 'guest' && !S.ringing && S.conn && S.conn.open && Math.max(2, S.party.list.length) < MAX_PARTY) { knockInCall(c, label, true); return; }
+  if (extMeeting && S.role === 'guest' && S.conn && S.conn.open) { knockInCall(c, label, true); return; }
   if (S.inCall || S.ringing || S.outgoing) {
     try { c.send({ t: 'busy' }); } catch { /* 閉じている */ }
     setTimeout(() => c.close(), 800);
@@ -4299,6 +4552,7 @@ function guestRetry(kind) {
   const msg = {
     absent: '相手はまだ待機していません。このままお待ちください（自動で入室を申し込みます）。',
     busy: 'ただいま相手は別の打ち合わせ中です。このままお待ちください（自動で入室を申し込みます）。',
+    full: `ただいま満員です（最大${MAX_PARTY}人）。空きが出るまで、このままお待ちください（自動で入室を申し込みます）。`,
     net: 'インターネットに接続できません。接続を確認しています…',
   }[kind];
   showGuest('waiting', msg);
@@ -4307,10 +4561,12 @@ function guestRetry(kind) {
 // 申し込みの結果（入室できなかったとき）
 function guestOutcome(why) {
   if (G.state !== 'waiting') return;
-  if (why === 'absent' || why === 'busy' || why === 'net') { guestRetry(why); return; }
+  if (why === 'absent' || why === 'busy' || why === 'net' || why === 'full') { guestRetry(why); return; }
   releaseMedia();
   const msg = {
     reject: '入室はお断りされました。',
+    closed: '打ち合わせ部屋は閉じられました。',
+    ended: 'ただいま相手は対応できません。時間をおいて、もう一度「入室する」を押してください。',
     timeout: '相手が応答しませんでした。お手数ですが、もう一度「入室する」を押してください。',
     ice: 'お使いのネットワークでは相手と直接つながりませんでした。会社のネットワークの制限が考えられます。スマートフォンの回線（テザリング）など、別の回線でお試しください。',
     cancel: '',
@@ -4544,8 +4800,24 @@ function setupTheme() {
 
 function setupMeet() {
   $('#meetCreateBtn').addEventListener('click', createMeeting);
+  $('#meetRoomBtn').addEventListener('click', (e) => snipe(e, e.currentTarget, openRoom));
+  $('#roomCopyBtn').addEventListener('click', async () => {
+    const link = $('#roomLink').value;
+    try { await navigator.clipboard.writeText(link); banner('招待リンクをコピーしました。メールやチャットに貼り付けて相手に送ってください', 5000); }
+    catch { $('#roomLink').select(); document.execCommand('copy'); banner('招待リンクをコピーしました', 4000); }
+  });
+  $('#roomMailBtn').addEventListener('click', () => $('#meetMailBtn').click());
+  $('#roomCloseBtn').addEventListener('click', () => $('#leaveBtn').click());
+  $('#roomKeepBtn').addEventListener('click', () => { if (S.room) S.room.emptied = false; updateRoomCard(); armRoomIdle(); });
+  $('#roomClearBtn').addEventListener('click', async () => {
+    if (!(await askConfirm('開いている図面・写真と書き込みを、すべて片付けます（次に入る方には見えなくなります）。保存が必要なら、先に「記録を保存」してください。', '片付ける'))) return;
+    clearAllDocs();
+    if (S.room) S.room.emptied = false;
+    updateRoomCard();
+    banner('図面を片付けました。次の方を待っています', 4000);
+  });
   $('#meetEndBtn').addEventListener('click', async () => {
-    if (await askConfirm('このリンクでの待機をやめます。相手はリンクから入室できなくなります（あとで「このリンクで待機」で再開できます）。', '待機をやめる')) stopMeeting();
+    if (await askConfirm('このリンクの受付をやめますか？（相手はこのリンクから申し込めなくなります。「前に作ったリンク」から、いつでも再開できます）', '受付をやめる')) stopMeeting();
   });
   $('#meetCopyBtn').addEventListener('click', async () => {
     const link = $('#meetLink').value;
@@ -4635,6 +4907,7 @@ async function init() {
   requestAnimationFrame(drawPointers);
   setInterval(pollStats, 2000);
   setInterval(meshCheck, 5000);
+  setInterval(checkWaiting, 4000);
   $('#tilesHideBtn').addEventListener('click', () => { $('#peerTiles').dataset.closed = '1'; partyMedia(); });
   $('#partyCopyBtn').addEventListener('click', async () => { const mt = S.meeting; if (!mt) return; try { await navigator.clipboard.writeText(meetLink(mt)); banner('招待リンクをコピーしました', 3000); } catch { banner(meetLink(mt), 10_000); } });
   audioCtx(); // 起動オプションで自動再生が許可されていれば、この時点で着信音が使える
@@ -4660,7 +4933,10 @@ async function init() {
   if (GUEST_MODE) {
     setupGuest();
     setInterval(watchdog, 5000);
-    window.addEventListener('pagehide', () => { if (S.inCall) send({ t: 'bye' }); });
+    window.addEventListener('pagehide', () => {
+      if (S.inCall) send({ t: 'bye' });
+      else if (S.outgoing && S.outgoing.c) { try { S.outgoing.c.send({ t: 'cancel' }); } catch { /* 閉じている */ } } // 申し込み中に閉じた
+    });
     await listDevices();
     navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
     return;

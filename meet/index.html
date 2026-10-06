@@ -46,13 +46,22 @@
       </div>
       <div id="meetActive" hidden>
         <p class="meet-head"><b id="meetActiveLabel"></b> <span id="meetState" class="meet-state">準備中…</span></p>
-        <div class="meet-link"><input id="meetLink" readonly aria-label="招待リンク" onclick="this.select()"><button id="meetCopyBtn" class="primary" type="button">リンクをコピー</button></div>
-        <div class="row wrap">
-          <button id="meetMailBtn" class="ghost" type="button">メールで送る</button>
-          <button id="meetShareBtn" class="ghost" type="button">ほかのアプリで送る</button>
-          <button id="meetEndBtn" class="ghost" type="button">待機をやめる</button>
-        </div>
-        <p class="hint">この画面を開いている間、相手はリンクから入室を申し込めます。申し込みがあると呼び出し音が鳴るので、名前を確かめて「入室を許可」を押してください。</p>
+        <ol class="meet-steps">
+          <li>
+            <b>このリンクを相手に送る</b>（同じ打ち合わせに参加する方にだけ送ってください。最大6人）
+            <div class="meet-link"><input id="meetLink" readonly aria-label="招待リンク" onclick="this.select()"><button id="meetCopyBtn" class="primary" type="button">リンクをコピー</button></div>
+            <div class="row wrap">
+              <button id="meetMailBtn" class="ghost" type="button">メールで送る</button>
+              <button id="meetShareBtn" class="ghost" type="button">ほかのアプリで送る</button>
+            </div>
+          </li>
+          <li>
+            <b>打ち合わせ部屋に入って待つ</b>
+            <div><button id="meetRoomBtn" class="primary big" type="button">打ち合わせ部屋に入る</button></div>
+            <p class="hint">相手がリンクを開いて申し込むと、部屋の画面の上に「入室待ち」が出ます。「許可」を押すと入ってきます。部屋に入らずに待っていても、相手が来ると呼び出し音が鳴ります。</p>
+          </li>
+        </ol>
+        <div class="row wrap"><button id="meetEndBtn" class="ghost" type="button">このリンクの受付をやめる</button></div>
       </div>
     </section>
 
@@ -180,6 +189,32 @@
       <p class="hint-sub">PDF・写真のほか、Word・Excel・PowerPoint・CAD（DXF・STL）・TIFF・テキストも開けます。</p>
       <p><b>「相手のカメラ」</b>で現場のカメラ映像を大きく映せます。</p>
     </div>
+    <!-- 打ち合わせ部屋：だれもいないとき -->
+    <div id="roomCard" class="room-card" hidden>
+      <h3 id="roomTitle">打ち合わせ部屋を開いています</h3>
+      <p id="roomNow" class="room-now"></p>
+      <div id="roomEmptied" hidden>
+        <p>次の方を待つときは、前の方に見せた図面を<b>片付けてから</b>待ってください（そのままだと、次に入った方にも見えます）。</p>
+        <div class="row wrap">
+          <button id="roomClearBtn" class="primary" type="button">図面を片付けて次の方を待つ</button>
+          <button id="roomKeepBtn" class="ghost" type="button">このまま次の方を待つ</button>
+          <button id="roomCloseBtn" class="ghost" type="button">部屋を閉じる</button>
+        </div>
+      </div>
+      <p>相手が招待リンクを開いて申し込むと、画面の上に<b>「入室待ち」</b>が出ます。<b>「許可」</b>を押すと入ってきます。</p>
+      <div id="roomLinkRow">
+        <p class="hint">まだ送っていなければ、このリンクを相手に送ってください。</p>
+        <div class="meet-link"><input id="roomLink" readonly aria-label="招待リンク" onclick="this.select()"><button id="roomCopyBtn" class="primary" type="button">リンクをコピー</button></div>
+        <div class="row"><button id="roomMailBtn" class="ghost" type="button">メールで送る</button></div>
+      </div>
+      <p class="hint">待っている間に「図面を開く」で図面を開いておけます。終えるときは右上の「部屋を閉じる」。だれも来ないまま20分たつと、自動で部屋を閉じます。</p>
+    </div>
+    <!-- 入室待ち（招待リンクから申し込んだ社外の方） -->
+    <div id="waitPanel" class="wait-panel" hidden role="alert">
+      <b id="waitTitle">入室待ち</b>
+      <ul id="waitList"></ul>
+      <small id="waitNote"></small>
+    </div>
     <div id="progress" hidden><div class="bar"><i></i></div><span></span></div>
 
     <div class="wipe" id="remoteWipe" hidden>
@@ -241,7 +276,7 @@
       <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
       <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
       <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
-      <button id="minutesBtn" class="tool wide" title="ここまでの文字起こし・チャットから、Gemini・ChatGPT・Claude で議事録を作る">議事録（AI）</button>
+      <button id="minutesBtn" class="tool wide" title="ここまでの文字起こし・チャットから、Gemini・ChatGPT・Claude・Copilot で議事録を作る">議事録（AI）</button>
       <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
       <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
       <button id="recordBtn" class="tool wide" title="ここまでの資料・写真・書き込み・文字起こしを1つのファイル（ZIP）にまとめて保存">記録を保存</button>
