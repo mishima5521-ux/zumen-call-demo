@@ -175,7 +175,8 @@
     <canvas id="ptrCanvas"></canvas>
 
     <div id="emptyHint">
-      <p><b>「図面を開く」</b>か、PDF・画像を<b>この画面にドラッグ</b>すると表示します（相手の画面にも表示されます）。</p>
+      <p><b>「図面を開く」</b>か、ファイルを<b>この画面にドラッグ</b>すると表示します（相手の画面にも表示されます）。</p>
+      <p class="hint-sub">PDF・写真のほか、Word・Excel・PowerPoint・CAD（DXF・STL）・TIFF・テキストも開けます。</p>
       <p><b>「相手のカメラ」</b>で現場のカメラ映像を大きく映せます。</p>
     </div>
     <div id="progress" hidden><div class="bar"><i></i></div><span></span></div>
@@ -207,7 +208,7 @@
 
   <nav class="toolbar">
     <div class="grp">
-      <button id="openBtn" class="tool wide" title="PDF・画像を開いて相手にも表示">図面を開く</button>
+      <button id="openBtn" class="tool wide" title="PDF・写真・Word・Excel・PowerPoint・CAD（DXF）などを開いて相手にも表示">図面を開く</button>
       <button id="prevBtn" class="tool" title="前のページ（←）">◀</button>
       <span id="pageText" class="page">-</span>
       <button id="nextBtn" class="tool" title="次のページ（→）">▶</button>
@@ -362,10 +363,11 @@
 </dialog>
 
 <audio id="remoteAudio" autoplay></audio>
-<input type="file" id="fileInput" accept=".pdf,application/pdf,image/*" hidden>
+<input type="file" id="fileInput" accept=".pdf,application/pdf,image/*" multiple hidden>
 
 <script>window.ZUMEN_DEMO = true; // デモ版：通信はせず、この端末だけで動く</script>
 <script src="vendor/pdf.min.js"></script>
+<script src="convert.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

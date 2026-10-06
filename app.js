@@ -1774,21 +1774,52 @@ function setupDropOpen() {
     depth = 0;
     show(false);
     if (el.room.hidden) return;
-    const files = Array.from(e.dataTransfer.files || []);
-    const ok = files.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name) || f.type.startsWith('image/'));
-    if (!ok.length) { banner('PDF か画像ファイルを離してください', 4000); return; }
-    for (const f of ok.slice(0, 10)) await openLocalFile(f);
-    if (ok.length < files.length) banner('PDF・画像以外のファイルは開けません', 4000);
+    await openLocalFiles(Array.from(e.dataTransfer.files || []));
   });
 }
 
+// 複数のファイルを順に開く（開けないものは、どうすれば見られるかを案内する）
+async function openLocalFiles(files) {
+  const ng = [];
+  let n = 0;
+  for (const f of files) {
+    if (fileHow(f).how === 'no') { ng.push(f); continue; }
+    if (++n > 10) { banner('一度に開けるのは 10 ファイルまでです', 5000); break; }
+    await openLocalFile(f);
+  }
+  if (ng.length) banner(ng.length === 1 || n ? `${ng[0].name}：${fileHow(ng[0]).msg}` : `${ng.length} 個のファイルは開けません。PDF に保存してから開いてください`, 9000);
+}
+// ファイルの種類を調べる（変換の部品が読み込めていないときは、PDF と画像だけ）
+const CONV = window.ZumenConvert || null;
+function fileHow(file) {
+  if (CONV) return CONV.classify(file);
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) return { how: 'pdf' };
+  if (file.type.startsWith('image/')) return { how: 'image' };
+  return { how: 'no', msg: 'PDF か画像ファイルを選んでください' };
+}
+
 async function openLocalFile(file) {
-  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-  if (!isPdf && !file.type.startsWith('image/')) { banner('PDF か画像ファイルを選んでください'); return; }
-  const doc = { id: rid(), kind: isPdf ? 'pdf' : 'image', name: file.name, mime: file.type || (isPdf ? 'application/pdf' : 'image/jpeg'), blob: file };
+  const how = fileHow(file);
+  if (how.how === 'no') { banner(how.msg, 9000); return; }
+  let doc;
+  if (how.how === 'convert') {
+    // Word・Excel・PowerPoint・CAD などは、この端末で PDF（または画像）に変換してから開く。相手には変換後のものを送る
+    let out;
+    try { out = await CONV.convert(file, (t, r) => progress(`${file.name}：${t}`, r)); }
+    catch (e) { console.warn(e); progress(null); banner(e.userMsg || 'このファイルは開けませんでした', 9000); return; }
+    doc = { id: rid(), kind: out.kind, name: file.name, mime: out.mime, blob: out.blob, src: file };
+    if (out.cut) banner(`${file.name} は大きいため、途中までを表示しています`, 6000);
+  } else {
+    const isPdf = how.how === 'pdf';
+    doc = { id: rid(), kind: isPdf ? 'pdf' : 'image', name: file.name, mime: file.type || (isPdf ? 'application/pdf' : 'image/jpeg'), blob: file };
+  }
   progress('図面を読み込み中…', 0.2);
   try { await prepareDoc(doc); }
-  catch (e) { console.error(e); progress(null); banner('このファイルは開けませんでした'); return; }
+  catch (e) {
+    console.error(e); progress(null);
+    banner(/\.(heic|heif)$/i.test(file.name) ? 'iPhone の写真形式（HEIC）はこの端末では開けません。iPhone の「設定 → カメラ → フォーマット」を「互換性優先」にするか、JPEG で送ってください' : 'このファイルは開けませんでした', 9000);
+    return;
+  }
   progress(null);
   sendDoc(doc);
   setContent({ type: 'doc', docId: doc.id, page: 1 });
@@ -2643,7 +2674,7 @@ function snapshotRecord() {
   const ext = S.external ? S.extChat.filter((e) => e.from !== 'sys').map((e) => ({ ts: e.ts, name: e.from === 'me' ? myCallName() : S.remoteName, text: e.text })) : [];
   return {
     ...inp, me: myCallName(), chats: [...inp.chats, ...ext].sort((a, b) => a.ts - b.ts),
-    docs: [...S.docs.values()].map((d) => ({ id: d.id, kind: d.kind, name: d.name, mime: d.mime, blob: d.blob, pages: d.pages })),
+    docs: [...S.docs.values()].map((d) => ({ id: d.id, kind: d.kind, name: d.name, mime: d.mime, blob: d.blob, src: d.src || null, pages: d.pages })),
     strokes: [...S.strokes.entries()].filter(([, l]) => l && l.length).map(([k, l]) => [k, l.map((st) => ({ ...st, pts: st.pts.slice() }))]),
   };
 }
@@ -2692,6 +2723,11 @@ function makeZip(files) {
   return new Blob([...parts, ...central, end], { type: 'application/zip' });
 }
 const safeName = (n) => String(n).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 80) || '資料';
+function recordFileName(d) {
+  if (d.src) return d.name;
+  if (d.kind === 'pdf') return /\.pdf$/i.test(d.name) ? d.name : d.name + '.pdf';
+  return /\.(png|jpe?g|jfif|gif|webp|bmp|avif|heic|heif|ico)$/i.test(d.name) ? d.name : d.name + (d.mime === 'image/png' ? '.png' : '.jpg');
+}
 async function saveRecord(r) {
   if (!recordHasContent(r)) { banner('保存する記録（資料・書き込み・文字起こし）がありません', 4000); return false; }
   const files = [], used = new Set();
@@ -2706,7 +2742,8 @@ async function saveRecord(r) {
     let done = 0;
     for (const d of r.docs) {
       progress(`記録を作成中… ${d.name}`, done++ / Math.max(1, r.docs.length));
-      add(`資料/${safeName(d.name)}`, new Uint8Array(await d.blob.arrayBuffer()));
+      // 自分で開いた Word・Excel・CAD などは元のファイルを、相手から届いたものは変換後の PDF・画像を保存する
+      add(`資料/${safeName(recordFileName(d))}`, new Uint8Array(await (d.src || d.blob).arrayBuffer()));
       const pages = [...strokes.keys()].filter((k) => k.startsWith(d.id + ':')).map((k) => Number(k.slice(d.id.length + 1))).filter((n) => n >= 1).sort((a, b) => a - b);
       if (!pages.length) continue;
       const base = safeName(d.name.replace(/\.[^.]+$/, ''));
@@ -3044,7 +3081,8 @@ function setupToolbar() {
   setColor(S.color);
   $$('.tool-sel').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#openBtn').addEventListener('click', () => el.fileInput.click());
-  el.fileInput.addEventListener('change', () => { const f = el.fileInput.files[0]; el.fileInput.value = ''; if (f) openLocalFile(f); });
+  if (CONV) el.fileInput.accept = CONV.accept;
+  el.fileInput.addEventListener('change', () => { const fs = Array.from(el.fileInput.files || []); el.fileInput.value = ''; if (fs.length) openLocalFiles(fs); });
   $('#prevBtn').addEventListener('click', () => gotoPage(-1));
   $('#nextBtn').addEventListener('click', () => gotoPage(1));
   $('#zoomInBtn').addEventListener('click', () => zoomAt(SW / 2, SH / 2, 1.4));

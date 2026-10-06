@@ -263,6 +263,7 @@ legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
   color: var(--stage-text); pointer-events: none; padding: 16px;
 }
 #emptyHint p { margin: 4px 0; }
+#emptyHint .hint-sub { font-size: 0.85em; opacity: 0.8; }
 
 #progress {
   position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
