@@ -33,6 +33,8 @@ const GUEST_MODE = !!JOIN_ROOM && !DEMO;
 const HOSTED = !!CFG.hosted;
 // 議事録の自動作成（文字起こし＋AI）は保留中。config.js で minutes: true にしたときだけ使う
 const MINUTES_ON = CFG.minutes === true;
+// 文字起こし・字幕はいつでも使える（議事録の自動作成がオフのときは、字幕の表示だけ）
+const TR_USE = MINUTES_ON ? '議事録に使われます' : '画面の下に字幕で表示されます';
 const DEFAULT_JOIN_URL = 'https://mishima5521-ux.github.io/zumen-call-demo/meet/';
 // 画面のデザイン（theme.js）。読み込めなかったときは今までのデザインのまま動く
 const TH = window.ZumenTheme || null;
@@ -1325,7 +1327,7 @@ function startTr(announce = true) {
   if (announce) send({ t: 'tr-state', on: true });
   runRecog();
   updateTrBtn();
-  banner('文字起こしを開始しました。話した内容が文字になり、議事録に使われます', 5000);
+  banner(`文字起こしを開始しました。話した内容が文字になり、${TR_USE}`, 5000);
 }
 function runRecog() {
   const r = new SR();
@@ -1647,10 +1649,9 @@ function onMessage(m) {
     case 'doc-close': if (isId(m.id)) closeDoc(m.id, { fromRemote: true }); break;
     case 'share': banner(m.on ? `${S.remoteName} が画面を共有しています` : `${S.remoteName} が画面の共有を終えました`, 5000); break;
     case 'msg': if (typeof m.text === 'string') banner(m.text.slice(0, 200)); break;
-    case 'tr': if (MINUTES_ON && m.line && typeof m.line.text === 'string') addTrLine('them', S.remoteName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
+    case 'tr': if (m.line && typeof m.line.text === 'string') addTrLine('them', S.remoteName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
     case 'tr-state':
-      if (!MINUTES_ON) break;
-      if (m.on && !S.tr.on) { startTr(false); banner(`${S.remoteName} が文字起こしを開始しました。話した内容が議事録に使われます`, 6000); }
+      if (m.on && !S.tr.on) { startTr(false); banner(`${S.remoteName} が文字起こしを開始しました。話した内容が${TR_USE}`, 6000); }
       else if (!m.on && S.tr.on) { stopTr(false); banner(`${S.remoteName} が文字起こしを止めました`, 4000); }
       break;
     default: break;
@@ -1734,6 +1735,33 @@ async function prepareDoc(doc) {
   if (S.inCall) S.callDocs.add(doc.name);
   renderTabs();
   return doc;
+}
+
+// 図面（PDF・画像）を通話中の画面にドラッグ＆ドロップで開く（複数まとめてもよい。1つずつタブになり、相手にも表示される）
+function setupDropOpen() {
+  const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  let depth = 0;
+  const show = (on) => el.room.classList.toggle('dropping', on);
+  // 画面のどこに落としても、ブラウザがファイルを開いて図面テレビ電話の画面から離れてしまわないようにする
+  window.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = el.room.hidden ? 'none' : 'copy';
+  });
+  window.addEventListener('dragenter', (e) => { if (hasFiles(e) && !el.room.hidden) { depth++; show(true); } });
+  window.addEventListener('dragleave', (e) => { if (hasFiles(e) && !el.room.hidden && --depth <= 0) { depth = 0; show(false); } });
+  window.addEventListener('drop', async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    show(false);
+    if (el.room.hidden) return;
+    const files = Array.from(e.dataTransfer.files || []);
+    const ok = files.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name) || f.type.startsWith('image/'));
+    if (!ok.length) { banner('PDF か画像ファイルを離してください', 4000); return; }
+    for (const f of ok.slice(0, 10)) await openLocalFile(f);
+    if (ok.length < files.length) banner('PDF・画像以外のファイルは開けません', 4000);
+  });
 }
 
 async function openLocalFile(file) {
@@ -2879,6 +2907,7 @@ function setupToolbar() {
   $('#shareBtn').hidden = !canShare();
   $('#shareBtn').addEventListener('click', () => (S.share ? stopShare() : startShare()));
   $('#tabAddBtn').addEventListener('click', () => el.fileInput.click());
+  setupDropOpen();
   $('#snapRemoteBtn').addEventListener('click', () => {
     if (DEMO) { takeSnapshot(); return; }
     if (!S.conn || !S.conn.open) { banner('相手とつながっていません'); return; }
@@ -3562,8 +3591,11 @@ async function init() {
   if (DEMO) {
     document.body.classList.add('demo');
   }
-  // 議事録の自動作成は保留中：関係するボタンを出さない
-  if (!MINUTES_ON) for (const id of ['#trBtn', '#minutesBtn', '#historyBtn']) $(id).classList.add('feature-off');
+  // 議事録の自動作成は保留中：議事録のボタンを出さない（文字起こし・字幕は使える）
+  if (!MINUTES_ON) {
+    for (const id of ['#minutesBtn', '#historyBtn']) $(id).classList.add('feature-off');
+    $('#trBtn').title = '話した内容を文字にして、画面の下に字幕で出す（相手側も自動で始まります）';
+  }
   setupMeet();
   // 社外の方：招待リンクから開いた → 入室画面だけを出す
   if (GUEST_MODE) {
