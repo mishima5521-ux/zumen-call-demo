@@ -51,10 +51,13 @@ const validView = (v) => !!v && finite(v.cx) && finite(v.cy) && finite(v.zoom) &
 function validContent(c) {
   if (!c || typeof c !== 'object') return false;
   if (c.type === 'none') return true;
-  if (c.type === 'live') return c.who === 'host' || c.who === 'guest';
+  if (c.type === 'live') return c.who === 'host' || c.who === 'guest' || isUid(c.who);
   if (c.type === 'doc') return isId(c.docId) && Number.isInteger(c.page) && c.page >= 1 && c.page <= 5000;
   return false;
 }
+const isUid = (x) => typeof x === 'string' && /^u[a-z2-9]{8}$/.test(x);
+const newUid = () => 'u' + secureId(8);
+const MAX_PARTY = 6;                 // 打ち合わせの最大人数
 const MAX_FILE = 200 * 1024 * 1024;  // 受け取る図面の上限
 const MAX_STROKES = 5000;            // 1ページの書き込みの上限
 const MAX_STROKE_PTS = 40000;        // 1本の線の点の上限
@@ -121,6 +124,25 @@ const S = {
   meeting: null,         // ホスト：待機中の招待リンク { id, label, hostName, peer }
   extChat: [],           // 社外の方とのチャット（保存しない）
   previews: new Map(),   // 相手から先に届いた図面の見本画像 docId -> { name, kind, pages, imgs: Map(page -> {img, W, H}) }
+
+  // 複数人の打ち合わせ（最大6人）。電話を受けた側（まとめ役）が全員とつながり、図面・書き込みなどを配る。
+  // 映像と音声は、まとめ役以外の人どうしも直接つなぐ（つながらないときは、まとめ役が中継する）
+  uid: '',               // 打ち合わせの中での自分の番号（社内の接続IDは社外の方に知らせないため、別の番号を使う）
+  partnerUid: '',        // S.conn の相手の番号（まとめ役から見た最初の相手 / 参加者から見たまとめ役）
+  primaryMesh: '',       // まとめ役：最初の相手の映像用の接続ID
+  party: { id: '', hub: '', list: [] }, // 参加者の一覧 [{ uid, name, mesh }]
+  extras: new Map(),     // まとめ役：2人目以降の参加者 uid -> { uid, c, call, name, stream, token, mesh, member, external, timer }
+  mesh: new Map(),       // 参加者：ほかの参加者との映像 uid -> { call, peer, stream }
+  relays: new Map(),     // 参加者：まとめ役が中継している映像 uid -> { call, stream }
+  relayOut: new Map(),   // まとめ役：中継している映像
+  meshPeer: null,        // 社内の参加者：映像用の接続（番号は毎回ランダム）
+  sentMesh: '',
+  meshWait: new Map(),
+  invites: new Map(),    // まとめ役：呼び出し中の社内の人 memberId -> { c, m, timer, done }
+  grpChat: [],           // 複数人の打ち合わせのチャット（保存しない）
+  door: null,            // まとめ役：社外の方を受け入れる入口（毎回ランダムな ID）
+  tickets: new Map(),    // まとめ役：入口から入ってよい社外の方の合言葉
+  doorWait: new Map(),   // 参加者：入口を案内するのを待っている社外の方の接続
 };
 if (QS.has('debug')) window.__zumen = S; // 動作確認用
 
@@ -293,13 +315,37 @@ function fillSelect(sel, list, cur, label) {
   if (cur && list.some((d) => d.deviceId === cur)) sel.value = cur;
 }
 
-function videoSender() {
-  const pc = S.call && S.call.peerConnection;
-  return pc ? pc.getSenders().find((s) => s.track && s.track.kind === 'video') || pc.getSenders().find((s) => !s.track || s.track.kind === 'video') : null;
+// 映像を送っている相手すべて（1対1なら1つ。複数人なら人数分）
+function allCalls() {
+  const a = [];
+  if (S.call) a.push(S.call);
+  for (const X of S.extras.values()) if (X.call) a.push(X.call);
+  for (const v of S.mesh.values()) if (v.call) a.push(v.call);
+  return a;
 }
-function audioSender() {
-  const pc = S.call && S.call.peerConnection;
-  return pc ? pc.getSenders().find((s) => s.track && s.track.kind === 'audio') : null;
+function videoSenders() {
+  const out = [];
+  for (const call of allCalls()) {
+    const pc = call.peerConnection;
+    if (!pc) continue;
+    const s = pc.getSenders().find((x) => x.track && x.track.kind === 'video') || pc.getSenders().find((x) => !x.track);
+    if (s) out.push(s);
+  }
+  return out;
+}
+function audioSenders() {
+  const out = [];
+  for (const call of allCalls()) {
+    const pc = call.peerConnection;
+    const s = pc && pc.getSenders().find((x) => x.track && x.track.kind === 'audio');
+    if (s) out.push(s);
+  }
+  return out;
+}
+// 相手に送る映像（画面共有中は共有している画面）
+function outStream() {
+  if (!S.share || !S.localStream) return S.localStream;
+  return new MediaStream([S.share.track, ...S.localStream.getAudioTracks()]);
 }
 
 // deviceId でカメラを選ぶ。facing（'user'＝内側／'environment'＝外側）を渡すとスマホの向きで選ぶ
@@ -320,8 +366,7 @@ async function switchCamera(deviceId, facing = null) {
   nt.enabled = old ? old.enabled : true;
   if (old) { S.localStream.removeTrack(old); old.stop(); }
   S.localStream.addTrack(nt);
-  const sender = videoSender();
-  if (sender && !S.share) await sender.replaceTrack(nt);
+  if (!S.share) for (const sd of videoSenders()) await sd.replaceTrack(nt).catch(() => {});
   refreshLocalVideos();
   await applyQuality();
 }
@@ -336,8 +381,7 @@ async function switchMic(deviceId) {
   nt.enabled = old ? old.enabled : true;
   if (old) { S.localStream.removeTrack(old); old.stop(); }
   S.localStream.addTrack(nt);
-  const sender = audioSender();
-  if (sender) await sender.replaceTrack(nt);
+  for (const sd of audioSenders()) await sd.replaceTrack(nt).catch(() => {});
 }
 
 function refreshLocalVideos() {
@@ -362,16 +406,21 @@ async function applyQuality() {
     try { await t.applyConstraints({ width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps } }); } catch { /* カメラ非対応の値は無視 */ }
     t.contentHint = q.hint;
   }
-  const sender = videoSender();
-  if (!sender || !sender.getParameters) return;
-  const p = sender.getParameters();
-  if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-  p.encodings[0].maxBitrate = S.share ? Math.max(q.br, 6_000_000) : q.br;
-  p.encodings[0].scaleResolutionDownBy = 1;
-  p.degradationPreference = S.share ? 'maintain-resolution' : q.deg;
-  try { await sender.setParameters(p); }
-  catch {
-    try { delete p.degradationPreference; await sender.setParameters(p); } catch { /* 未対応ブラウザ */ }
+  // 複数人のときは送る相手の数だけ回線を使うので、大きく映されていないときは軽くする
+  const group = isGroup();
+  const featured = !group || (S.content.type === 'live' && isMeWho(S.content.who));
+  const w = (t && t.getSettings().width) || 640;
+  for (const sender of videoSenders()) {
+    if (!sender.getParameters) continue;
+    const p = sender.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = S.share ? (group ? 2_500_000 : Math.max(q.br, 6_000_000)) : featured ? q.br : 600_000;
+    p.encodings[0].scaleResolutionDownBy = S.share || featured ? 1 : Math.max(1, w / 640);
+    p.degradationPreference = S.share ? 'maintain-resolution' : q.deg;
+    try { await sender.setParameters(p); }
+    catch {
+      try { delete p.degradationPreference; await sender.setParameters(p); } catch { /* 未対応ブラウザ */ }
+    }
   }
 }
 function setQuality(q, { auto = false } = {}) {
@@ -447,8 +496,15 @@ function startStandby() {
 
 // 映像は、通話中のデータ接続の相手からだけ受ける
 function onMediaCall(call) {
-  if (S.inCall && S.conn && call.peer === S.conn.peer && S.localStream) { call.answer(S.localStream); bindCall(call); }
-  else call.close();
+  const md = call.metadata || {};
+  if (S.inCall && S.conn && call.peer === S.conn.peer && S.localStream) {
+    if (isUid(md.relay)) { acceptRelay(call, md.relay); return; } // まとめ役が中継してくれる、ほかの参加者の映像
+    call.answer(outStream()); bindCall(call); return;
+  }
+  const X = S.inCall && S.role === 'host' && extraByPeer(call.peer);
+  if (X && S.localStream) { call.answer(outStream()); bindExtraCall(X, call); return; }
+  if (S.inCall && md.g && acceptMesh(call)) return;
+  call.close();
 }
 
 // スリープ復帰やネット切断のあとも自動で待受に戻る
@@ -470,6 +526,8 @@ function onIncoming(c) {
   if (md.token) {
     // 通話中の回線断からの再接続 → 鳴らさずにそのままつなぐ
     if (S.inCall && md.token === S.token && c.peer === S.partner) { acceptConn(c); return; }
+    const X = S.inCall && S.role === 'host' && extraByToken(md.token, c.peer);
+    if (X) { reacceptExtra(X, c); return; }
     // すでに終わった通話への再接続 → 終了を伝えて断る（鳴らさない）
     c.send({ t: 'bye' });
     setTimeout(() => c.close(), 800);
@@ -489,14 +547,15 @@ function onIncoming(c) {
     if (S.inCall) banner(`${name} から着信がありました（通話中のため出られませんでした）`, 10_000);
     return;
   }
-  ring(c, name, from);
+  ring(c, name, from, { invite: !!md.invite, party: Array.isArray(md.party) ? md.party.map((x) => cleanText(x, 40)).filter(Boolean).slice(0, MAX_PARTY) : [] });
 }
 
 // ---- 着信 ----
-function ring(c, name, from, { knock = false } = {}) {
-  const r = { c, name, from, knock, cancelled: false };
+function ring(c, name, from, { knock = false, invite = false, party = [] } = {}) {
+  const r = { c, name, from, knock, invite, cancelled: false };
   S.ringing = r;
   showCallOverlay(knock ? 'knock' : 'incoming', name);
+  if (invite) $('#callStatus').textContent = `から打ち合わせへの呼び出しです${party.length ? `（参加中：${party.join('、')}）` : ''}`;
   startAlert();
   notify(knock ? `${name} が入室を希望しています` : `${name} から着信`, '図面テレビ電話');
   try { window.focus(); } catch { /* 前面に出せない環境もある */ }
@@ -523,6 +582,7 @@ async function answer() {
   const r = S.ringing;
   if (!r) return;
   if (r.demo) { demoAnswer(r); return; }
+  if (r.invite) { joinInvite(r); return; }
   endRinging(r);
   S.role = 'host';
   S.partner = r.c.peer;
@@ -565,13 +625,16 @@ function acceptConn(c) {
   clearTimeout(S.hostWaitTimer);
   S.conn = c;
   bindConn(c);
-  fileChannel();
+  fileChannel(c);
+  if (!S.uid) S.uid = newUid();
+  if (!S.partnerUid) S.partnerUid = newUid();
   c.send({ t: 'accept', token: S.token, name: myCallName() });
-  sendHello();
+  sendHello(c);
   onCallConnected();
+  broadcastRoster();
 }
 function onCallConnected() {
-  setStatus(`${S.remoteName} と通話中`, 'ok');
+  if (isGroup()) updatePartyStatus(); else setStatus(`${S.remoteName} と通話中`, 'ok');
   if (!S.callStartedAt) S.callStartedAt = Date.now();
   if (S.tr.on) send({ t: 'tr-state', on: true }); // 回線断から戻ったら相手の文字起こしも再開
   S.reconnectUntil = 0;
@@ -605,7 +668,7 @@ async function placeCall(member) {
 // reconnect=true のときは通話中の再接続（呼出音・着信画面なし）
 function dial(peerId, name, reconnect, member = memberByPid(peerId)) {
   const md = GUEST_MODE
-    ? { type: 'join', name: G.name, company: G.company, token: reconnect ? S.token : null }
+    ? { type: 'join', name: G.name, company: G.company, token: reconnect ? S.token : null, ticket: !reconnect && G.ticket ? G.ticket : undefined }
     : { type: 'call', name: S.name, token: reconnect ? S.token : null };
   const c = S.peer && S.peer.open ? S.peer.connect(peerId, { reliable: true, metadata: md }) : null;
   const o = { c, peerId, name, reconnect, member };
@@ -622,7 +685,16 @@ function dial(peerId, name, reconnect, member = memberByPid(peerId)) {
   }
   c.on('data', (m) => {
     if (S.outgoing !== o || !m) return;
-    if (m.t === 'accept') onAccepted(o, m);
+    if (m.t === 'accept') { G.ticket = null; onAccepted(o, m); }
+    else if (m.t === 'redirect' && GUEST_MODE && !reconnect && typeof m.door === 'string' && m.door.length <= 64 && typeof m.ticket === 'string') {
+      // 許可された → 打ち合わせのまとめ役の入口に入り直す
+      clearTimeout(o.timer); clearTimeout(o.showTimer);
+      S.outgoing = null;
+      c.removeAllListeners('close');
+      setTimeout(() => c.close(), 300);
+      G.ticket = m.ticket.slice(0, 64);
+      dial(m.door, name, false, null);
+    }
     else if (m.t === 'reject') {
       if (m.reason === 'callback' && member) {
         if (m.msg) addChat(member.id, { ...m.msg, from: 'them' });
@@ -671,6 +743,7 @@ function endOutgoing(o, msg, why = '') {
 function onPeerUnavailable(peerId) {
   const m = memberByPid(peerId);
   if (m) setPresence(m.id, 'offline');
+  for (const inv of S.invites.values()) if (inv.c.peer === peerId) inv.done(`${inv.m.name} を呼び出せません（相手のPCの電源・スリープ・ネット接続を確認してください）`);
   const o = S.outgoing;
   if (o && o.peerId === peerId && !o.pending) endOutgoing(o, o.reconnect ? null : `${o.name} を呼び出せません（相手のPCの電源・スリープ・ネット接続を確認してください）`, 'absent');
 }
@@ -690,8 +763,8 @@ function onAccepted(o, m) {
   if (!S.inCall) enterCall();
   S.conn = o.c;
   bindConn(o.c);
-  fileChannel();
-  const call = S.peer.call(o.peerId, S.localStream, { metadata: { token: S.token } });
+  fileChannel(o.c);
+  const call = S.peer.call(o.peerId, outStream(), { metadata: { token: S.token } });
   if (call) bindCall(call);
   sendHello();
   onCallConnected();
@@ -734,7 +807,7 @@ function enterCall() {
 
 function hangup(msg, notifyPeer = true) {
   if (!S.inCall) return;
-  if (notifyPeer) send({ t: 'bye' });
+  if (notifyPeer) send({ t: 'bye' }); // まとめ役が終えると、全員の打ち合わせが終わる
   stopTr(false);
   const minutesInput = collectMinutesInput();
   const record = GUEST_MODE ? null : snapshotRecord(); // 図面を片付ける前に、保存用に取っておく
@@ -748,6 +821,7 @@ function hangup(msg, notifyPeer = true) {
   const o = S.outgoing;
   if (o && o.reconnect) { clearTimeout(o.timer); S.outgoing = null; if (o.c) { try { o.c.close(); } catch { /* 既に閉じている */ } } }
   setRemoteStream(null);
+  resetParty();
   endShare();
   // 通話中のデータを片付ける（図面はメモリから消す）
   for (const d of S.docs.values()) { try { d.pdf && d.pdf.destroy(); d.img && d.img.close && d.img.close(); } catch { /* 解放済み */ } }
@@ -763,7 +837,7 @@ function hangup(msg, notifyPeer = true) {
   closeChat();
   const wasExternal = S.external;
   S.external = GUEST_MODE; S.extChat = [];
-  if (EXT in S.unread) { delete S.unread[EXT]; store.set('unread', S.unread); }
+  if (EXT in S.unread || GRP in S.unread) { delete S.unread[EXT]; delete S.unread[GRP]; store.set('unread', S.unread); }
   if (el.room.classList.contains('full')) setFullscreen(false);
   el.room.hidden = true;
   releaseMedia();
@@ -777,15 +851,13 @@ function hangup(msg, notifyPeer = true) {
 }
 
 function bindConn(c) {
-  c.on('data', (m) => {
-    if (S.conn !== c) return; // 古い接続から遅れて届いたデータは捨てる
-    try { onMessage(m); } catch (e) { console.error(e); }
-  });
+  c.on('data', (m) => onLinkData(c, m));
   c.on('close', () => onConnClosed(c));
   c.on('error', () => onConnClosed(c));
 }
 
 function onConnClosed(c) {
+  if (S.inCall && S.role === 'host' && c !== S.conn) { const X = extraByConn(c); if (X) extraDown(X); return; }
   if (S.conn !== c || !S.inCall) return;
   S.conn = null;
   S.incoming.clear();
@@ -794,9 +866,10 @@ function onConnClosed(c) {
   setRemoteStream(null);
   S.pointers.delete('remote');
   if (S.role === 'host') {
-    setStatus(`回線が切れました。相手からの再接続を待っています（${HOST_WAIT / 1000}秒で自動終了）`, 'bad');
+    if (S.extras.size) { banner(`${S.remoteName} との回線が切れました。再接続を待っています`, 6000); broadcastRoster(); }
+    else setStatus(`回線が切れました。相手からの再接続を待っています（${HOST_WAIT / 1000}秒で自動終了）`, 'bad');
     clearTimeout(S.hostWaitTimer);
-    S.hostWaitTimer = setTimeout(() => hangup('相手との接続が戻らなかったため、通話を終了しました', false), HOST_WAIT);
+    S.hostWaitTimer = setTimeout(() => primaryGone(`${S.remoteName} との接続が戻らなかったため、通話を終了しました`), HOST_WAIT);
   } else {
     setStatus('回線が切れました。再接続しています…', 'bad');
     if (!S.reconnectUntil) S.reconnectUntil = Date.now() + GUEST_RETRY;
@@ -808,8 +881,9 @@ function bindCall(call) {
   if (S.call && S.call !== call) { try { S.call.close(); } catch { /* 既に閉じている */ } }
   S.call = call;
   call.on('stream', (st) => {
+    if (S.call !== call) return;
     setRemoteStream(st);
-    if (S.share) { const sd = videoSender(); if (sd) sd.replaceTrack(S.share.track).catch(() => {}); }
+    if (S.share) for (const sd of videoSenders()) sd.replaceTrack(S.share.track).catch(() => {});
     setTimeout(applyQuality, 500);
   });
   call.on('close', () => {
@@ -820,7 +894,7 @@ function bindCall(call) {
     if (S.inCall && S.role === 'guest') {
       setTimeout(() => {
         if (!S.inCall || S.call || !S.conn || !S.conn.open || !S.localStream) return;
-        const nc = S.peer.call(S.partner, S.localStream, { metadata: { token: S.token } });
+        const nc = S.peer.call(S.partner, outStream(), { metadata: { token: S.token } });
         if (nc) bindCall(nc);
       }, 2000);
     }
@@ -834,11 +908,22 @@ function setRemoteStream(st) {
   el.remoteWipe.querySelector('video').srcObject = st;
   el.remoteWipe.querySelector('.wipe-label').textContent = S.remoteName;
   updateWipes();
+  partyMedia();
   if (S.content.type === 'live') attachStageVideo();
 }
 
+// 送る：参加者はまとめ役へ、まとめ役は全員へ
+function links() {
+  const out = [];
+  if (S.conn && S.conn.open) out.push(S.conn);
+  for (const X of S.extras.values()) if (X.c && X.c.open) out.push(X.c);
+  return out;
+}
+function sendTo(c, m) {
+  if (c && c.open) { try { c.send(m); } catch (e) { console.warn(e); } }
+}
 function send(m) {
-  if (S.conn && S.conn.open) { try { S.conn.send(m); } catch (e) { console.warn(e); } }
+  for (const c of links()) sendTo(c, m);
 }
 
 // 大きなデータは順番を守り、送信バッファがあふれないように送る
@@ -847,10 +932,9 @@ function sendQueued(fn) {
   queue = queue.then(fn).catch((e) => console.warn(e));
   return queue;
 }
-async function waitDrain() {
+async function waitDrain(c) {
   for (;;) {
-    const c = S.conn;
-    if (!c || !c.open) return false;
+    if (!c || !c.open || !linkAlive(c)) return false;
     const dc = c.dataChannel;
     // 図面送信中もポインター等が遅れすぎないよう、ためる量は少なめにする
     if ((!dc || dc.bufferedAmount < 256 * 1024) && !(c.bufferSize > 0)) return true;
@@ -858,10 +942,11 @@ async function waitDrain() {
   }
 }
 
-function sendHello() {
+function sendHello(c = S.conn) {
   const m = { t: 'hello', name: myCallName(), docs: [...S.docs.keys()], contentTs: S.contentTs, role: S.role };
-  if (S.external && S.role === 'host' && TH) Object.assign(m, themeMsg());
-  send(m);
+  const X = extraByConn(c);
+  if (S.role === 'host' && TH && (S.external || (X && X.external))) Object.assign(m, themeMsg());
+  sendTo(c, m);
 }
 
 // ===================================================================
@@ -1057,13 +1142,16 @@ const hhmm = (ts = Date.now()) => new Date(ts).toLocaleTimeString('ja-JP', { hou
 const CHAT_MAX = 300;
 const chatCache = new Map();
 const EXT = 'ext'; // 社外の方とのチャットの番号（保存しない）
+const GRP = 'grp'; // 複数人の打ち合わせのチャット（保存しない）
 function partnerChatId() {
+  if (isGroup()) return GRP;
   if (S.external) return S.inCall ? EXT : null;
   const m = S.partner && memberByPid(S.partner);
   return m ? m.id : null;
 }
-const chatName = (id) => (id === EXT ? S.remoteName : (memberById(id) || {}).name || '');
+const chatName = (id) => (id === GRP ? `打ち合わせの全員（${S.party.list.length}人）` : id === EXT ? S.remoteName : (memberById(id) || {}).name || '');
 function chatLog(id) {
+  if (id === GRP) return S.grpChat;
   if (id === EXT) return S.extChat;
   if (!chatCache.has(id)) chatCache.set(id, store.get('chat.' + id, []));
   return chatCache.get(id);
@@ -1071,14 +1159,15 @@ function chatLog(id) {
 function saveChat(id) {
   const log = chatLog(id);
   if (log.length > CHAT_MAX) log.splice(0, log.length - CHAT_MAX);
-  if (id === EXT) return;
+  if (id === EXT || id === GRP) return;
   store.set('chat.' + id, log);
 }
 function addChat(id, entry) {
-  if (!memberById(id) && id !== EXT) return null;
+  if (!memberById(id) && id !== EXT && id !== GRP) return null;
   const log = chatLog(id);
   if (entry.id && log.some((x) => x.id === entry.id)) return null; // 同じメッセージの二重受信
   const e = { id: entry.id || rid(), ts: entry.ts || Date.now(), from: entry.from, text: String(entry.text || '').slice(0, 2000), st: entry.st };
+  if (entry.name) e.name = entry.name;
   log.push(e);
   saveChat(id);
   if (e.from === 'them' || (e.from === 'sys' && entry.unread !== false)) {
@@ -1115,7 +1204,7 @@ function sendChat(id, text) {
   addChat(id, { from: 'me', text, st: 'pending' });
   deliverChat(id);
 }
-function inCallWith(id) { return S.inCall && S.conn && S.conn.open && partnerChatId() === id; }
+function inCallWith(id) { return S.inCall && links().length > 0 && partnerChatId() === id; }
 function flushChatInCall() {
   const id = partnerChatId();
   if (id) deliverChat(id);
@@ -1125,8 +1214,12 @@ function deliverChat(id) {
   const pending = chatLog(id).filter((e) => e.from === 'me' && e.st === 'pending');
   if (!pending.length) return;
   if (DEMO) { demoChatReply(id, pending); return; }
-  if (inCallWith(id)) { for (const e of pending) send({ t: 'chat', msg: { id: e.id, text: e.text, ts: e.ts } }); return; }
-  if (id === EXT || !S.peer || !S.peer.open) return;
+  if (inCallWith(id)) {
+    for (const e of pending) send({ t: 'chat', msg: { id: e.id, text: e.text, ts: e.ts } });
+    if (id === GRP) { for (const e of pending) e.st = 'sent'; if (chat.open === id) renderChat(); } // 複数人のときは受け取りの返事を待たない
+    return;
+  }
+  if (id === EXT || id === GRP || !S.peer || !S.peer.open) return;
   let c = chatConns.get(id);
   const go = () => { for (const e of chatLog(id).filter((x) => x.from === 'me' && x.st === 'pending')) c.send({ t: 'chat', msg: { id: e.id, text: e.text, ts: e.ts } }); };
   if (c && c.open) { go(); return; }
@@ -1192,7 +1285,7 @@ function buildQuick() {
   }
 }
 function openChat(id) {
-  if (!memberById(id) && id !== EXT) return;
+  if (!memberById(id) && id !== EXT && id !== GRP) return;
   buildQuick();
   chat.open = id;
   S.unread[id] = 0;
@@ -1235,13 +1328,13 @@ function renderChat() {
     bubble.textContent = e.text;
     const meta = document.createElement('span');
     meta.className = 'chat-meta';
-    meta.textContent = hhmm(e.ts) + (e.from === 'me' ? (e.st === 'pending' ? ' 未送信（相手の待受に戻ると自動で送ります）' : ' 送信済み') : '');
+    meta.textContent = (e.from === 'them' && e.name ? e.name + '　' : '') + hhmm(e.ts) + (e.from === 'me' ? (e.st === 'pending' ? ' 未送信（相手の待受に戻ると自動で送ります）' : ' 送信済み') : '');
     row.append(bubble, meta);
     list.appendChild(row);
   }
   list.scrollTop = list.scrollHeight;
   const callBtn = $('#chatCallBtn');
-  callBtn.hidden = S.inCall || id === EXT;
+  callBtn.hidden = S.inCall || id === EXT || id === GRP;
 }
 function updateChatBadges() {
   const b = $('#chatBtnBadge');
@@ -1408,7 +1501,7 @@ function showCaption(who, name, text) {
   let row = box.querySelector(`[data-who="${who}"]`);
   if (!row) {
     row = document.createElement('div');
-    row.className = 'cap ' + who;
+    row.className = 'cap ' + (who === 'me' ? 'me' : 'them');
     row.dataset.who = who;
     row.append(document.createElement('b'), document.createElement('span'));
     box.appendChild(row);
@@ -1424,8 +1517,10 @@ function collectMinutesInput() {
   const m = S.partner && memberByPid(S.partner);
   const start = S.callStartedAt || Date.now();
   const chats = m ? chatLog(m.id).filter((e) => e.ts >= start && e.from !== 'sys').map((e) => ({ ts: e.ts, name: e.from === 'me' ? S.name : S.remoteName, text: e.text })) : [];
+  for (const e of S.grpChat) if (e.from !== 'sys') chats.push({ ts: e.ts, name: e.from === 'me' ? myCallName() : e.name || '', text: e.text });
+  const others = S.party.list.filter((p) => p.uid !== S.uid).map((p) => p.name);
   return {
-    start, end: Date.now(), me: S.name, partner: S.remoteName,
+    start, end: Date.now(), me: S.name, partner: others.length > 1 ? others.join('、') : S.remoteName,
     docs: [...(S.callDocs || [])],
     lines: [...(S.tr ? S.tr.lines : [])].sort((a, b) => a.ts - b.ts),
     chats,
@@ -1621,20 +1716,55 @@ function setupMinutes() {
 // ===================================================================
 // 受信メッセージ
 // ===================================================================
-function onMessage(m) {
+// 届いたデータ：まとめ役は、ほかの参加者にも配る（送った人の番号を付けて）
+const RELAY = new Set(['content', 'view', 'ptr', 'ptr-off', 'sb', 'sp', 'del', 'clear', 'doc-close', 'share', 'msg', 'tr', 'tr-state', 'chat', 'pv']);
+function linkAlive(c) { return !!c && (c === S.conn || !!extraByConn(c)); }
+function onLinkData(c, m) {
+  if (!m || typeof m !== 'object' || !linkAlive(c)) return; // 古い接続から遅れて届いたデータは捨てる
+  if (S.role === 'host' && S.extras.size && RELAY.has(m.t)) {
+    const fwd = { ...m, from: uidOfConn(c) };
+    for (const o of links()) if (o !== c) sendTo(o, fwd);
+  }
+  try { onMessage(m, c); } catch (e) { console.error(e); }
+}
+// 送った人：まとめ役から見ればその接続の相手、参加者から見れば（中継されたものは）付いている番号
+function senderOf(m, c) {
+  if (S.role === 'host') return uidOfConn(c);
+  return isUid(m.from) && S.party.list.some((p) => p.uid === m.from) ? m.from : S.partnerUid;
+}
+function nameOfUid(uid) {
+  const p = uid && S.party.list.find((x) => x.uid === uid);
+  return p ? p.name : S.remoteName;
+}
+const ptrKey = (uid) => (uid && isGroup() ? 'u:' + uid : 'remote');
+
+function onMessage(m, c = S.conn) {
+  const from = senderOf(m, c);
+  const fromName = nameOfUid(from);
   switch (m.t) {
     case 'bye':
+      if (S.role === 'host' && c !== S.conn) { const X = extraByConn(c); if (X) removeExtra(X, `${X.name} が退出しました`); break; }
+      if (S.role === 'host' && S.extras.size) { primaryGone(`${S.remoteName} が退出しました`); break; }
       hangup(!S.external ? `${S.remoteName} が通話を終了しました`
         : GUEST_MODE ? `${S.remoteName} が打ち合わせを終了しました。このページは閉じてかまいません。` : `${S.remoteName} が退室しました`, false);
       break;
-    case 'chat': { const id = partnerChatId(); if (id) receiveChat(id, m.msg, null); break; }
+    case 'chat': {
+      if (isGroup()) { receiveGroupChat(m.msg, fromName); break; }
+      const id = partnerChatId(); if (id) receiveChat(id, m.msg, c); break;
+    }
     case 'chat-ack': { const id = partnerChatId(); if (id && isId(m.id)) markSent(id, m.id); break; }
-    case 'hello': onHello(m); break;
+    case 'hello': onHello(m, c); break;
     case 'theme': applyHostTheme(m); break;
     case 'state': onState(m); break;
-    case 'fb': fileBegin(m); break;
+    case 'fb': fileBegin(m, c); break;
     case 'fc': fileChunk(m); break;
-    case 'fe': fileEnd(m); break;
+    case 'fe': fileEnd(m, c); break;
+    case 'roster': if (S.role !== 'host') onRoster(m); break;
+    case 'mesh': if (S.role === 'host' && typeof m.id === 'string' && m.id.length <= 64) setLinkMesh(c, m.id); break;
+    case 'mesh-fail': if (S.role === 'host' && isUid(m.uid)) relayTo(c, m.uid); break;
+    case 'invite': if (S.role === 'host' && isInternalLink(c)) inviteMember(memberById(String(m.id))); break;
+    case 'door-req': if (S.role === 'host' && isInternalLink(c) && isId(m.reqId)) openDoorFor(c, m); break;
+    case 'door': if (S.role !== 'host' && isId(m.reqId)) onDoor(m); break;
     case 'content':
       if (validContent(m.c)) setContent(m.c, { send: false, view: validView(m.view) ? m.view : null, ts: finite(m.ts) ? m.ts : null });
       break;
@@ -1642,9 +1772,14 @@ function onMessage(m) {
       if (validView(m.view) && S.sync && S.cur && m.key === S.cur.key) { S.view = m.view; viewChanged(false); }
       break;
     case 'ptr':
-      if (isKey(m.key) && finite(m.u) && finite(m.v)) S.pointers.set('remote', pushPtr(S.pointers.get('remote'), m.key, m.u, m.v));
+      if (isKey(m.key) && finite(m.u) && finite(m.v)) {
+        const k = ptrKey(from);
+        const p = pushPtr(S.pointers.get(k), m.key, m.u, m.v);
+        p.name = fromName; p.uid = from;
+        S.pointers.set(k, p);
+      }
       break;
-    case 'ptr-off': S.pointers.delete('remote'); break;
+    case 'ptr-off': S.pointers.delete(ptrKey(from)); break;
     case 'sb':
       if (isKey(m.key) && validStroke(m.s) && !S.strokeById.has(m.s.id) && (S.strokes.get(m.key) || []).length < MAX_STROKES) addStroke(m.key, m.s);
       break;
@@ -1655,43 +1790,55 @@ function onMessage(m) {
     }
     case 'del': if (isId(m.id)) deleteStroke(m.id, false); break;
     case 'clear': if (isKey(m.key)) clearStrokes(m.key, false); break;
-    case 'snap-req': onSnapRequest(); break;
+    case 'snap-req':
+      // 複数人のときは、撮ってほしい人あて。まとめ役は、その人に渡す
+      if (S.role === 'host' && isUid(m.to) && m.to !== S.uid) { const t = linkOfUid(m.to); if (t) sendTo(t, { t: 'snap-req', from }); break; }
+      onSnapRequest(fromName);
+      break;
     case 'doc-req': {
-      // 送り直しの依頼は 1 つの図面につき 10 秒に 1 回まで
+      // 送り直しの依頼は 1 つの図面につき 10 秒に 1 回まで（相手ごと）
       const d = isId(m.id) && S.docs.get(m.id);
-      if (d && !(d.reqAt > Date.now() - 10_000)) { d.reqAt = Date.now(); d.remoteHas = false; sendDoc(d); }
+      c._reqAt = c._reqAt || new Map();
+      if (d && !(c._reqAt.get(d.id) > Date.now() - 10_000)) { c._reqAt.set(d.id, Date.now()); hasSet(c).delete(d.id); sendDocTo(c, d); }
       break;
     }
-    case 'got': { const d = isId(m.id) && S.docs.get(m.id); if (d) d.remoteHas = true; break; }
+    case 'got': if (isId(m.id)) hasSet(c).add(m.id); break;
     case 'pv': onPreview(m); break;
     case 'doc-close': if (isId(m.id)) closeDoc(m.id, { fromRemote: true }); break;
-    case 'share': banner(m.on ? `${S.remoteName} が画面を共有しています` : `${S.remoteName} が画面の共有を終えました`, 5000); break;
+    case 'share': banner(m.on ? `${fromName} が画面を共有しています` : `${fromName} が画面の共有を終えました`, 5000); break;
     case 'msg': if (typeof m.text === 'string') banner(m.text.slice(0, 200)); break;
-    case 'tr': if (m.line && typeof m.line.text === 'string') addTrLine('them', S.remoteName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
+    case 'tr': if (m.line && typeof m.line.text === 'string') addTrLine(isGroup() && from ? from : 'them', fromName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
     case 'tr-state':
-      if (m.on && !S.tr.on) { startTr(false); banner(`${S.remoteName} が文字起こしを開始しました。話した内容が${TR_USE}`, 6000); }
-      else if (!m.on && S.tr.on) { stopTr(false); banner(`${S.remoteName} が文字起こしを止めました`, 4000); }
+      if (m.on && !S.tr.on) { startTr(false); banner(`${fromName} が文字起こしを開始しました。話した内容が${TR_USE}`, 6000); }
+      else if (!m.on && S.tr.on) { stopTr(false); banner(`${fromName} が文字起こしを止めました`, 4000); }
       break;
     default: break;
   }
 }
 
-function onHello(m) {
+function onHello(m, link = S.conn) {
   applyHostTheme(m);
-  // 社外の方の名前は入室時のもの（〇〇様）を使い続ける
-  if (m.name && !(S.external && S.role === 'host')) S.remoteName = cleanText(m.name, 60);
+  const extra = S.role === 'host' && link !== S.conn;
+  // 社外の方の名前は入室時のもの（〇〇様）を使い続ける。2人目以降の参加者の名前も、まとめ役が決めたもの
+  if (m.name && !extra && !(S.external && S.role === 'host')) S.remoteName = cleanText(m.name, 60);
   const theirs = Array.isArray(m.docs) ? m.docs.filter(isId).slice(0, 500) : [];
-  for (const id of theirs) { const d = S.docs.get(id); if (d) d.remoteHas = true; }
+  for (const id of theirs) hasSet(link).add(id);
   el.remoteWipe.querySelector('.wipe-label').textContent = S.remoteName;
-  const mine = S.content.type !== 'none';
-  const newer = S.contentTs > (m.contentTs || 0) || (S.contentTs === m.contentTs && S.role === 'host');
-  if (!mine || !newer) return;
-  // 自分の表示内容の方が新しい → 相手に図面と書き込みを渡す
+  if (!extra) broadcastRoster();
   const c = S.content;
-  if (c.type === 'doc' && !theirs.includes(c.docId)) sendDoc(S.docs.get(c.docId));
+  // 途中から参加した人には、開いている図面をすべて（タブの順に）渡す
+  if (extra) for (const d of S.docs.values()) if (!(c.type === 'doc' && c.docId === d.id)) setTimeout(() => sendDocTo(link, d), 0);
+  const mine = c.type !== 'none';
+  const newer = S.contentTs > (m.contentTs || 0) || (S.contentTs === m.contentTs && S.role === 'host');
+  if (!mine || !newer) {
+    if (extra && S.strokes.size) sendQueued(() => sendTo(link, { t: 'state', c, ts: S.contentTs, view: S.view, strokes: [...S.strokes.entries()] }));
+    return;
+  }
+  // 自分の表示内容の方が新しい → 相手に図面と書き込みを渡す
+  if (c.type === 'doc' && !theirs.includes(c.docId)) sendDocTo(link, S.docs.get(c.docId));
   const prefix = c.type === 'doc' ? c.docId + ':' : 'live:';
-  const strokes = [...S.strokes.entries()].filter(([k]) => k.startsWith(prefix));
-  sendQueued(() => send({ t: 'state', c, ts: S.contentTs, view: S.view, strokes }));
+  const strokes = [...S.strokes.entries()].filter(([k]) => extra || k.startsWith(prefix));
+  sendQueued(() => sendTo(link, { t: 'state', c, ts: S.contentTs, view: S.view, strokes }));
 }
 
 function onState(m) {
@@ -1825,28 +1972,36 @@ async function openLocalFile(file) {
   setContent({ type: 'doc', docId: doc.id, page: 1 });
 }
 
+// 図面は相手ごとに「持っているか」を覚え、持っていない人にだけ送る
+const hasSet = (c) => c._has || (c._has = new Set());
 function sendDoc(doc) {
-  if (!doc || doc.sending) return;
-  doc.sending = true;
+  if (!doc) return;
+  for (const c of links()) sendDocTo(c, doc);
+}
+function sendDocTo(c, doc) {
+  if (!doc || !c || hasSet(c).has(doc.id)) return;
+  c._sending = c._sending || new Set();
+  if (c._sending.has(doc.id)) return;
+  c._sending.add(doc.id);
   sendQueued(async () => {
-    try { await sendDocNow(doc); } finally { doc.sending = false; }
+    try { await sendDocNow(c, doc); } finally { c._sending.delete(doc.id); }
   });
 }
-async function sendDocNow(doc) {
-  if (!S.conn || !S.conn.open || doc.remoteHas) return;
+async function sendDocNow(c, doc) {
+  if (!c.open || !linkAlive(c) || hasSet(c).has(doc.id) || !S.docs.has(doc.id)) return;
   const buf = await doc.blob.arrayBuffer();
-  const ch = await openFileChannel();
-  if (ch) return sendViaFileChannel(ch, doc, buf);
+  const ch = await openFileChannel(c);
+  if (ch) return sendViaFileChannel(c, ch, doc, buf);
   {
     // 図面専用の通り道が使えないとき（古い版の相手など）は、制御用の接続で少しずつ送る
     const size = buf.byteLength;
-    send({ t: 'fb', id: doc.id, kind: doc.kind, name: doc.name, mime: doc.mime, size });
+    sendTo(c, { t: 'fb', id: doc.id, kind: doc.kind, name: doc.name, mime: doc.mime, size });
     for (let off = 0; off < size; off += CHUNK) {
-      if (!(await waitDrain())) { progress(null); return; }
-      send({ t: 'fc', id: doc.id, d: buf.slice(off, Math.min(size, off + CHUNK)) });
+      if (!(await waitDrain(c))) { progress(null); return; }
+      sendTo(c, { t: 'fc', id: doc.id, d: buf.slice(off, Math.min(size, off + CHUNK)) });
       if ((off / CHUNK) % 32 === 0) progress(`相手に送信中 ${doc.name}`, off / size);
     }
-    send({ t: 'fe', id: doc.id });
+    sendTo(c, { t: 'fe', id: doc.id });
     progress(null);
   }
 }
@@ -1856,8 +2011,7 @@ async function sendDocNow(doc) {
 //   大きな塊のまま変換なしで流せるので速く、図面の送信中もポインターが遅れない。
 const FILE_CH_ID = 50;
 const FCHUNK = 64 * 1024;
-function fileChannel() {
-  const c = S.conn;
+function fileChannel(c) {
   const pc = c && c.peerConnection;
   if (!pc || pc.signalingState === 'closed') return null;
   if (c._fch && c._fch.readyState !== 'closed') return c._fch;
@@ -1865,31 +2019,29 @@ function fileChannel() {
     const ch = pc.createDataChannel('zumen-file', { negotiated: true, id: FILE_CH_ID, ordered: true });
     ch.binaryType = 'arraybuffer';
     ch.bufferedAmountLowThreshold = 1 << 20;
-    ch.onmessage = (e) => { if (S.conn === c) onFileData(e.data); };
+    ch.onmessage = (e) => { if (linkAlive(c)) onFileData(c, e.data); };
     c._fch = ch;
     return ch;
   } catch (e) { console.warn('file channel', e); return null; }
 }
 // 開くまで少し待つ（相手が古い版だと開かないので、そのときは null）
-async function openFileChannel(ms = 3000) {
-  const ch = fileChannel();
+async function openFileChannel(c, ms = 3000) {
+  const ch = fileChannel(c);
   if (!ch) return null;
   const end = Date.now() + ms;
   while (ch.readyState === 'connecting' && Date.now() < end) await sleep(50);
   return ch.readyState === 'open' ? ch : null;
 }
-let rxFileId = null;
-function onFileData(d) {
+function onFileData(c, d) {
   if (typeof d === 'string') {
     let m; try { m = JSON.parse(d); } catch { return; }
-    if (m.t === 'fb') { rxFileId = m.id; fileBegin(m); }
-    else if (m.t === 'fe') { rxFileId = null; fileEnd(m); }
+    if (m.t === 'fb') { c._rx = m.id; fileBegin(m, c); }
+    else if (m.t === 'fe') { c._rx = null; fileEnd(m, c); }
     return;
   }
-  if (rxFileId) fileChunk({ id: rxFileId, d });
+  if (c._rx) fileChunk({ id: c._rx, d });
 }
-async function sendViaFileChannel(ch, doc, buf) {
-  const c = S.conn;
+async function sendViaFileChannel(c, ch, doc, buf) {
   const size = buf.byteLength;
   ch.send(JSON.stringify({ t: 'fb', id: doc.id, kind: doc.kind, name: doc.name, mime: doc.mime, size }));
   for (let off = 0, n = 0; off < size; off += FCHUNK, n++) {
@@ -1900,7 +2052,7 @@ async function sendViaFileChannel(ch, doc, buf) {
         ch.addEventListener('close', done);
       });
     }
-    if (ch.readyState !== 'open' || S.conn !== c || doc.remoteHas) { progress(null); return; }
+    if (ch.readyState !== 'open' || !linkAlive(c) || hasSet(c).has(doc.id)) { progress(null); return; }
     ch.send(buf.slice(off, Math.min(size, off + FCHUNK)));
     if (n % 16 === 0) progress(`相手に送信中 ${doc.name}`, off / size);
   }
@@ -1912,7 +2064,8 @@ async function sendViaFileChannel(ch, doc, buf) {
 const PREVIEW_MIN = 600 * 1024;   // これより小さいファイルは本物をそのまま送る方が早い
 const PREVIEW_PX = 2000;
 async function sendPreview(doc, page) {
-  if (!doc || doc.remoteHas || doc.blob.size < PREVIEW_MIN || !S.conn || !S.conn.open) return;
+  const lacks = () => links().some((c) => !hasSet(c).has(doc.id));
+  if (!doc || doc.blob.size < PREVIEW_MIN || !lacks()) return;
   doc.pvSent = doc.pvSent || new Set();
   if (doc.pvSent.has(page)) return;
   doc.pvSent.add(page);
@@ -1927,7 +2080,7 @@ async function sendPreview(doc, page) {
       W = doc.img.width; H = doc.img.height;
       src = doc.img;
     }
-    if (doc.remoteHas) return;
+    if (!lacks()) return;
     const k = Math.min(1, PREVIEW_PX / Math.max(src.width, src.height));
     const c = document.createElement('canvas');
     c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
@@ -1935,7 +2088,7 @@ async function sendPreview(doc, page) {
     g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
     g.drawImage(src, 0, 0, c.width, c.height);
     const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.8));
-    if (!blob || doc.remoteHas) return;
+    if (!blob || !lacks()) return;
     send({ t: 'pv', id: doc.id, kind: doc.kind, name: doc.name, pages: doc.pages, page, W, H, img: await blob.arrayBuffer() });
   } catch (e) { console.warn('preview', e); doc.pvSent.delete(page); }
 }
@@ -1967,7 +2120,8 @@ function requestDocLater(id) {
   }, 4000));
 }
 
-function fileBegin(m) {
+function fileBegin(m, c) {
+  if (c && isId(m.id)) hasSet(c).add(m.id); // 送ってきた人は持っている
   if (!isId(m.id) || (m.kind !== 'pdf' && m.kind !== 'image') || !finite(m.size) || m.size <= 0 || S.docs.has(m.id)) return;
   if (m.size > MAX_FILE) { banner(`相手から届いた図面が大きすぎるため受け取れませんでした（${MAX_FILE / 1024 / 1024}MB まで）`, 8000); return; }
   if (S.incoming.size >= 4) return;
@@ -1986,7 +2140,7 @@ function fileChunk(m) {
   f.got += d.byteLength;
   if (f.parts.length % 32 === 0) progress(`受信中 ${f.meta.name}`, f.got / f.meta.size);
 }
-async function fileEnd(m) {
+async function fileEnd(m, c) {
   const f = isId(m.id) && S.incoming.get(m.id);
   if (!f) return;
   S.incoming.delete(m.id);
@@ -1998,7 +2152,8 @@ async function fileEnd(m) {
   if (pv) doc.pvImgs = pv.imgs;
   try { await prepareDoc(doc); } catch (e) { console.error(e); banner('受け取った図面を開けませんでした'); return; }
   S.previews.delete(doc.id);
-  send({ t: 'got', id: doc.id });
+  sendTo(c, { t: 'got', id: doc.id });
+  if (S.role === 'host' && S.extras.size) sendDoc(doc); // まとめ役は、ほかの参加者にも渡す
   if (S.content.type === 'doc' && S.content.docId === doc.id) prepareContent();
 }
 
@@ -2019,8 +2174,11 @@ function setContent(c, { send: doSend = true, view = null, ts = null } = {}) {
   if (doSend) send({ t: 'content', c, ts: S.contentTs, view: S.view });
   if (c.type === 'doc') sendPreview(S.docs.get(c.docId), c.page); // 相手がページを送っても、その見本を返す
   // 自分のカメラが大きく映されたら自動で高画質に、外れたら元に戻す
-  if (c.type === 'live' && c.who === S.role && S.quality === 'std') setQuality('hi', { auto: true });
-  else if (!(c.type === 'live' && c.who === S.role) && S.autoBoosted) setQuality('std');
+  const meLive = c.type === 'live' && isMeWho(c.who);
+  if (meLive && S.quality === 'std') setQuality('hi', { auto: true });
+  else if (!meLive && S.autoBoosted) setQuality('std');
+  else if (isGroup()) applyQuality();
+  partyMedia();
   prepareContent();
 }
 
@@ -2090,7 +2248,7 @@ function renderLow(page) {
 function attachStageVideo() {
   const c = S.content;
   if (c.type !== 'live') return;
-  const src = c.who !== S.role ? S.remoteStream : c.screen && S.share ? S.share.stream : S.localStream;
+  const src = isMeWho(c.who) ? (c.screen && S.share ? S.share.stream : S.localStream) : streamOfWho(c.who);
   if (el.stageVideo.srcObject !== src) el.stageVideo.srcObject = src;
   el.stageVideo.play().catch(() => {});
 }
@@ -2254,7 +2412,7 @@ function drawPointers() {
       if (now - p.last > 4000) { S.pointers.delete(who); continue; }
       p.pts = p.pts.filter((q) => now - q.t < TRAIL_MS || q === p.pts[p.pts.length - 1]);
       const pts = p.pts.map((q) => ({ x: t.ox + q.u * t.W * t.s, y: t.oy + q.v * t.H * t.s, a: 1 - (now - q.t) / TRAIL_MS }));
-      const color = who === 'me' ? '255,40,40' : '255,40,40';
+      const color = who.startsWith('u:') ? ptrColor(p.uid) : '255,40,40';
       g.lineCap = 'round';
       for (let i = 1; i < pts.length; i++) {
         g.strokeStyle = `rgba(${color},${clamp(pts[i].a, 0, 1) * 0.6})`;
@@ -2272,9 +2430,9 @@ function drawPointers() {
       g.fillStyle = 'rgba(255,255,255,.9)';
       g.beginPath(); g.arc(h.x, h.y, 3, 0, Math.PI * 2); g.fill();
       g.restore();
-      if (who === 'remote') {
+      if (who !== 'me') {
         g.font = '12px sans-serif';
-        const label = S.remoteName;
+        const label = p.name || S.remoteName;
         const w = g.measureText(label).width + 10;
         g.fillStyle = 'rgba(0,0,0,.6)';
         g.fillRect(h.x + 12, h.y + 8, w, 18);
@@ -2544,8 +2702,9 @@ function keepWipesInside() {
 function updateWipes() {
   const live = S.content.type === 'live' ? S.content.who : null;
   const remoteWho = S.role === 'host' ? 'guest' : 'host';
-  el.remoteWipe.hidden = !S.remoteStream || el.remoteWipe.dataset.closed === '1' || live === remoteWho;
-  el.selfWipe.hidden = el.selfWipe.dataset.closed === '1' || (live === S.role && !S.content.screen);
+  // 複数人のときは、相手の映像を左の列に並べる（ワイプは自分だけ）
+  el.remoteWipe.hidden = isGroup() || !S.remoteStream || el.remoteWipe.dataset.closed === '1' || live === remoteWho || (!!live && live === S.partnerUid);
+  el.selfWipe.hidden = el.selfWipe.dataset.closed === '1' || (!!live && isMeWho(live) && !S.content.screen);
   el.selfWipe.classList.toggle('mirror', S.mirror && realVideoTrack()?.getSettings().facingMode !== 'environment');
 }
 
@@ -2578,9 +2737,9 @@ async function takeSnapshot() {
   sendDoc(doc);
   setContent({ type: 'doc', docId: doc.id, page: 1 });
 }
-function onSnapRequest() {
-  if (!S.external) { banner(`${S.remoteName} の依頼で撮影します`); takeSnapshot(); return; }
-  askConfirm(`${S.remoteName} から、こちらのカメラで高画質の写真を撮って共有するよう依頼がありました。撮影しますか？`, '撮影する').then((ok) => {
+function onSnapRequest(who = S.remoteName) {
+  if (!S.external) { banner(`${who} の依頼で撮影します`); takeSnapshot(); return; }
+  askConfirm(`${who} から、こちらのカメラで高画質の写真を撮って共有するよう依頼がありました。撮影しますか？`, '撮影する').then((ok) => {
     if (!S.inCall) return;
     if (ok) takeSnapshot();
     else send({ t: 'msg', text: '撮影の依頼はお断りされました' });
@@ -2861,8 +3020,8 @@ function updateToolbar() {
   el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? (c.screen ? '画面' : 'カメラ') : '-';
   $('#prevBtn').disabled = !isPdf || c.page <= 1;
   $('#nextBtn').disabled = !isPdf || c.page >= doc.pages;
-  $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && c.who !== S.role && !c.screen);
-  $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && c.who === S.role && !c.screen);
+  $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && !isMeWho(c.who) && !c.screen);
+  $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && isMeWho(c.who) && !c.screen);
   const sb = $('#shareBtn');
   sb.classList.toggle('on', !!S.share);
   sb.textContent = S.share ? '共有を停止' : '画面共有';
@@ -2870,7 +3029,7 @@ function updateToolbar() {
 }
 // 全画面：上下のバーを隠し、映像（図面）だけを画面いっぱいに表示する
 function setFullscreen(on) {
-  if (on && S.content.type === 'none') showLive(S.role === 'host' ? 'guest' : 'host'); // 何も映していなければ相手のカメラ
+  if (on && S.content.type === 'none') showLive(otherWho()); // 何も映していなければ相手のカメラ
   el.room.classList.toggle('full', on);
   $('#fullExitBtn').hidden = !on;
   try {
@@ -3036,11 +3195,10 @@ async function startShare() {
   track.addEventListener('ended', () => { if (S.share && S.share.track === track) stopShare(); });
   rememberDocView();
   S.share = { stream, track, prev: S.content };
-  const sender = videoSender();
-  if (sender) { try { await sender.replaceTrack(track); } catch (e) { console.warn(e); } }
+  for (const sd of videoSenders()) { try { await sd.replaceTrack(track); } catch (e) { console.warn(e); } }
   applyQuality();
   send({ t: 'share', on: true });
-  setContent({ type: 'live', who: S.role, screen: true });
+  setContent({ type: 'live', who: meWho(), screen: true });
   banner('画面を共有しています。やめるときは「共有を停止」を押してください', 6000);
 }
 // 共有をやめて、カメラ映像に戻す
@@ -3048,12 +3206,11 @@ async function stopShare() {
   const sh = S.share;
   if (!sh) return;
   endShare();
-  const sender = videoSender();
   const cam = S.localStream && S.localStream.getVideoTracks()[0];
-  if (sender && cam) { try { await sender.replaceTrack(cam); } catch (e) { console.warn(e); } }
+  if (cam) for (const sd of videoSenders()) { try { await sd.replaceTrack(cam); } catch (e) { console.warn(e); } }
   applyQuality();
   send({ t: 'share', on: false });
-  if (S.content.type === 'live' && S.content.screen && S.content.who === S.role) {
+  if (S.content.type === 'live' && S.content.screen && isMeWho(S.content.who)) {
     const p = sh.prev;
     if (p && p.type === 'doc' && S.docs.has(p.docId)) { const d = S.docs.get(p.docId); setContent({ ...p, page: d.lastPage || p.page }, { view: d.lastView }); }
     else if (p && p.type === 'live' && !p.screen) setContent(p);
@@ -3091,26 +3248,40 @@ function setupToolbar() {
   $('#syncBtn').addEventListener('click', (e) => { S.sync = !S.sync; e.currentTarget.classList.toggle('on', S.sync); if (S.sync) viewChanged(); });
   $('#undoBtn').addEventListener('click', undo);
   $('#clearBtn').addEventListener('click', async () => { if (S.cur && await askConfirm('このページの書き込みを全部消します（相手の画面からも消えます）。', '全部消す')) clearStrokes(S.cur.key); });
-  $('#liveRemoteBtn').addEventListener('click', () => showLive(S.role === 'host' ? 'guest' : 'host'));
-  $('#liveSelfBtn').addEventListener('click', () => showLive(S.role));
+  $('#liveRemoteBtn').addEventListener('click', async () => {
+    if (!isGroup()) { showLive(otherWho()); return; }
+    const uid = await pickPerson('だれのカメラを大きく映しますか？');
+    if (uid) showLive(uid);
+  });
+  $('#liveSelfBtn').addEventListener('click', () => showLive(meWho()));
   $('#snapSelfBtn').addEventListener('click', takeSnapshot);
   $('#shareBtn').hidden = !canShare();
   $('#shareBtn').addEventListener('click', () => (S.share ? stopShare() : startShare()));
   $('#tabAddBtn').addEventListener('click', () => el.fileInput.click());
   setupDropOpen();
-  $('#snapRemoteBtn').addEventListener('click', () => {
+  $('#snapRemoteBtn').addEventListener('click', async () => {
     if (DEMO) { takeSnapshot(); return; }
-    if (!S.conn || !S.conn.open) { banner('相手とつながっていません'); return; }
+    if (!links().length) { banner('相手とつながっていません'); return; }
+    if (isGroup()) {
+      const uid = await pickPerson('だれのカメラで撮影しますか？');
+      if (!uid || !S.inCall) return;
+      if (S.role === 'host') { const t = linkOfUid(uid); if (t) sendTo(t, { t: 'snap-req', from: S.uid }); }
+      else send({ t: 'snap-req', to: uid });
+      banner(`${nameOfUid(uid)} のカメラで撮影しています…`);
+      return;
+    }
     send({ t: 'snap-req' });
     banner('相手のカメラで撮影しています…');
   });
+  $('#addBtn').addEventListener('click', openPartyDlg);
   $('#fullBtn').addEventListener('click', () => setFullscreen(!el.room.classList.contains('full')));
   $('#fullExitBtn').addEventListener('click', () => setFullscreen(false));
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && el.room.classList.contains('full')) setFullscreen(false); });
   $('#wipeBtn').addEventListener('click', () => {
-    delete el.remoteWipe.dataset.closed; delete el.selfWipe.dataset.closed;
+    delete el.remoteWipe.dataset.closed; delete el.selfWipe.dataset.closed; delete $('#peerTiles').dataset.closed;
     for (const w of [el.remoteWipe, el.selfWipe]) { w.style.left = w.style.top = w.style.right = w.style.bottom = w.style.width = ''; }
     updateWipes();
+    partyMedia();
   });
   $('#saveBtn').addEventListener('click', saveImage);
   $('#recordBtn').addEventListener('click', () => saveRecord(snapshotRecord()));
@@ -3159,7 +3330,9 @@ function setupToolbar() {
   $('#mirrorChk').checked = S.mirror;
   $('#mirrorChk').addEventListener('change', (e) => { S.mirror = e.target.checked; store.set('mirror', S.mirror); updateWipes(); });
   $('#leaveBtn').addEventListener('click', async () => {
-    if (await askConfirm(GUEST_MODE ? '打ち合わせから退室しますか？' : '通話を終了しますか？', GUEST_MODE ? '退室する' : '終了する')) hangup();
+    const hub = S.role === 'host' && S.extras.size;
+    const q = GUEST_MODE ? '打ち合わせから退室しますか？' : hub ? `通話を終了しますか？（あなたが打ち合わせのまとめ役なので、${S.party.list.length}人全員の通話が終わります）` : isGroup() ? '打ち合わせから抜けますか？（ほかの人の打ち合わせは続きます）' : '通話を終了しますか？';
+    if (await askConfirm(q, GUEST_MODE ? '退室する' : '終了する')) hangup();
   });
 
   window.addEventListener('keydown', (e) => {
@@ -3185,6 +3358,630 @@ function setupToolbar() {
     if (el.remoteAudio.srcObject && el.remoteAudio.paused) el.remoteAudio.play().then(() => banner(null)).catch(() => {});
   });
 }
+
+// ===================================================================
+// 複数人の打ち合わせ（最大6人）
+//   電話を受けた側（まとめ役）が全員とつながり、図面・書き込み・ポインターなどを全員に配る。
+//   映像と音声は、まとめ役以外の人どうしも直接つなぐ（つながらないときは、まとめ役が中継する）。
+//   人を加えるのは「人を追加」から：社内の人は呼び出し、社外の方は招待リンクから入室を申し込んでもらう。
+//   参加者どうしには打ち合わせの中だけの番号（uid）と、毎回ランダムな映像用の接続IDだけを知らせる。
+// ===================================================================
+function isGroup() { return S.inCall && (S.extras.size > 0 || S.party.list.length > 2); }
+function isMeWho(w) { return !!w && (w === S.role || (!!S.uid && w === S.uid)); }
+function meWho() { return isGroup() && S.uid ? S.uid : S.role; }
+function otherWho() {
+  if (isGroup()) { const p = S.party.list.find((x) => x.uid !== S.uid); if (p) return p.uid; }
+  return S.role === 'host' ? 'guest' : 'host';
+}
+function partyCount() { return 1 + (S.partnerUid || S.conn ? 1 : 0) + S.extras.size + S.invites.size; }
+function streamOfWho(w) {
+  if (w === 'host' || w === 'guest' || w === S.partnerUid) return S.remoteStream;
+  const X = S.extras.get(w);
+  if (X) return X.stream;
+  const v = S.mesh.get(w);
+  if (v && v.stream) return v.stream;
+  const r = S.relays.get(w);
+  return r ? r.stream : null;
+}
+const PTR_COLORS = ['255,40,40', '30,110,255', '20,160,60', '235,120,0', '170,60,210', '0,150,170'];
+function ptrColor(uid) {
+  const i = S.party.list.findIndex((p) => p.uid === uid);
+  return PTR_COLORS[(i < 0 ? 0 : i) % PTR_COLORS.length];
+}
+function extraByConn(c) { if (!c) return null; for (const X of S.extras.values()) if (X.c === c) return X; return null; }
+function extraByPeer(peer) { for (const X of S.extras.values()) if (X.peer === peer) return X; return null; }
+function extraByToken(token, peer) { for (const X of S.extras.values()) if (X.token === token && X.peer === peer) return X; return null; }
+function uidOfConn(c) { if (c && c === S.conn) return S.partnerUid; const X = extraByConn(c); return X ? X.uid : ''; }
+function linkOfUid(uid) { if (uid === S.partnerUid) return S.conn; const X = S.extras.get(uid); return X ? X.c : null; }
+// 社内の人とのつながりか（社外の方は、ほかの人を呼び出せない）
+function isInternalLink(c) {
+  if (c === S.conn) return !S.external || !!memberByPid(S.partner);
+  const X = extraByConn(c);
+  return !!X && !X.external;
+}
+
+// ---- まとめ役：参加者の一覧を全員に配る ----
+function rosterList(forExternal = S.external) {
+  const l = [{ uid: S.uid, name: forExternal ? myCallName() : S.name, mesh: '' }];
+  if (S.partnerUid) l.push({ uid: S.partnerUid, name: S.remoteName, mesh: S.primaryMesh, down: !(S.conn && S.conn.open) });
+  for (const X of S.extras.values()) l.push({ uid: X.uid, name: X.name, mesh: X.mesh, down: !(X.c && X.c.open) });
+  return l;
+}
+function broadcastRoster() {
+  if (S.role !== 'host' || !S.inCall || !S.uid) return;
+  if (!S.party.id) S.party.id = secureId(12);
+  const list = rosterList(false);
+  S.party = { id: S.party.id, hub: S.uid, list };
+  for (const c of links()) {
+    const ext = c === S.conn ? !memberByPid(S.partner) : !!(extraByConn(c) || {}).external;
+    sendTo(c, { t: 'roster', id: S.party.id, hub: S.uid, you: uidOfConn(c), list: ext ? rosterList(true) : list });
+  }
+  partyChanged();
+}
+function setLinkMesh(c, id) {
+  if (c === S.conn) S.primaryMesh = id;
+  else { const X = extraByConn(c); if (!X) return; X.mesh = id; }
+  broadcastRoster();
+}
+// 参加者：一覧を受け取る
+function onRoster(m) {
+  if (!isUid(m.you) || !isUid(m.hub) || !Array.isArray(m.list) || typeof m.id !== 'string') return;
+  const list = m.list.slice(0, MAX_PARTY).filter((p) => p && isUid(p.uid)).map((p) => ({
+    uid: p.uid, name: cleanText(p.name, 60) || '参加者', mesh: typeof p.mesh === 'string' ? p.mesh.slice(0, 64) : '', down: !!p.down,
+  }));
+  const was = isGroup();
+  S.uid = m.you;
+  S.partnerUid = m.hub;
+  S.party = { id: m.id.slice(0, 40), hub: m.hub, list };
+  const hub = list.find((p) => p.uid === m.hub);
+  if (hub && !S.external) S.remoteName = hub.name;
+  if (isGroup()) ensureMesh(); else closeMesh();
+  for (const k of [...S.pointers.keys()]) if (k.startsWith('u:') && !list.some((p) => 'u:' + p.uid === k)) S.pointers.delete(k);
+  partyChanged();
+  if (isGroup() && !was) banner(`${list.length}人の打ち合わせになりました`, 4000);
+}
+function partyChanged() {
+  partyMedia();
+  updateWipes();
+  updatePartyStatus();
+  updateChatBadges();
+  if ($('#partyDlg').open) renderPartyDlg();
+  applyQuality();
+}
+function updatePartyStatus() {
+  if (!S.inCall) return;
+  if (!isGroup()) { if (S.conn && S.conn.open) setStatus(`${S.remoteName} と通話中`, 'ok'); return; }
+  const names = S.party.list.filter((p) => p.uid !== S.uid).map((p) => p.name + (p.down ? '（再接続待ち）' : ''));
+  setStatus(`打ち合わせ中（${S.party.list.length}人）：${names.join('、')}`, 'ok');
+  $('#chatBtn').title = '打ち合わせの全員とのチャット';
+}
+
+// 複数人になったとき：「大きく映すカメラ」の指定を、全員に通じる番号に置き換える
+function groupFormed() {
+  if (!S.uid) S.uid = newUid();
+  if (!S.partnerUid) S.partnerUid = newUid();
+  const c = S.content;
+  if (c.type === 'live' && (c.who === 'host' || c.who === 'guest')) setContent({ ...c, who: c.who === S.role ? S.uid : S.partnerUid }, { view: S.view });
+}
+
+// ---- まとめ役：参加者を加える・外す ----
+function acceptExtra(c, { name, member = null, external = false }) {
+  if (!S.inCall || S.role !== 'host') return;
+  const X = { uid: newUid(), c, peer: c.peer, name, member, external, token: secureId(24), call: null, stream: null, mesh: '', timer: null };
+  S.extras.set(X.uid, X);
+  if (S.extras.size === 1) groupFormed();
+  bindConn(c);
+  fileChannel(c);
+  sendTo(c, { t: 'accept', token: X.token, name: external ? myCallName() : S.name });
+  sendHello(c);
+  broadcastRoster();
+  banner(`${name} が打ち合わせに参加しました`, 4000);
+  addSysGroupChat(`${name} が参加しました`);
+}
+function reacceptExtra(X, c) {
+  clearTimeout(X.timer);
+  X.timer = null;
+  const old = X.c;
+  X.c = c;
+  X.peer = c.peer;
+  if (old && old !== c) { try { old.close(); } catch { /* 閉じている */ } }
+  bindConn(c);
+  fileChannel(c);
+  sendTo(c, { t: 'accept', token: X.token, name: X.external ? myCallName() : S.name });
+  sendHello(c);
+  broadcastRoster();
+}
+// 回線が切れた → しばらく再接続を待つ
+function extraDown(X) {
+  if (X.call) { try { X.call.close(); } catch { /* 閉じている */ } X.call = null; }
+  X.stream = null;
+  S.pointers.delete('u:' + X.uid);
+  clearTimeout(X.timer);
+  X.timer = setTimeout(() => removeExtra(X, `${X.name} との接続が戻らなかったため、打ち合わせから外れました`), HOST_WAIT);
+  banner(`${X.name} との回線が切れました。再接続を待っています`, 6000);
+  broadcastRoster();
+}
+function removeExtra(X, msg) {
+  if (S.extras.get(X.uid) !== X) return;
+  S.extras.delete(X.uid);
+  clearTimeout(X.timer);
+  const { c, call } = X;
+  setTimeout(() => { try { call && call.close(); c && c.close(); } catch { /* 閉じている */ } }, 300);
+  closeRelaysOf(X.uid);
+  S.pointers.delete('u:' + X.uid);
+  if (S.content.type === 'live' && S.content.who === X.uid) setContent({ type: 'none' });
+  broadcastRoster();
+  if (msg) { banner(msg, 6000); addSysGroupChat(msg); }
+}
+// 最初の相手が抜けた：ほかに参加者がいれば、その人を最初の相手にして続ける
+function primaryGone(msg) {
+  if (!S.inCall) return;
+  if (!S.extras.size) { hangup(msg, false); return; }
+  const X = [...S.extras.values()].find((x) => x.c && x.c.open) || S.extras.values().next().value;
+  const oldUid = S.partnerUid, oldConn = S.conn, oldCall = S.call;
+  S.extras.delete(X.uid);
+  clearTimeout(S.hostWaitTimer);
+  S.conn = X.c;
+  S.call = X.call;
+  S.partner = X.peer;
+  S.token = X.token;
+  S.remoteName = X.name;
+  S.partnerUid = X.uid;
+  S.primaryMesh = X.mesh;
+  if (X.timer) {
+    clearTimeout(X.timer);
+    if (!(S.conn && S.conn.open)) S.hostWaitTimer = setTimeout(() => primaryGone(`${X.name} との接続が戻らなかったため、打ち合わせから外れました`), HOST_WAIT);
+  }
+  if (S.call) bindCall(S.call);
+  setTimeout(() => { try { oldCall && oldCall !== S.call && oldCall.close(); oldConn && oldConn !== S.conn && oldConn.close(); } catch { /* 閉じている */ } }, 300);
+  closeRelaysOf(oldUid);
+  S.pointers.delete('u:' + oldUid);
+  S.pointers.delete('remote');
+  setRemoteStream(X.stream);
+  if (S.content.type === 'live' && S.content.who === oldUid) setContent({ type: 'none' });
+  broadcastRoster();
+  banner(msg, 6000);
+  addSysGroupChat(msg);
+}
+function bindExtraCall(X, call) {
+  if (X.call && X.call !== call) { try { X.call.close(); } catch { /* 閉じている */ } }
+  X.call = call;
+  call.on('stream', (st) => {
+    // 途中で「最初の相手」に繰り上がった場合も、どちらの映像かは届いた時点で決める
+    if (S.call === call) setRemoteStream(st);
+    else { const Y = [...S.extras.values()].find((x) => x.call === call); if (Y) Y.stream = st; }
+    if (S.share) for (const sd of videoSenders()) sd.replaceTrack(S.share.track).catch(() => {});
+    partyMedia();
+    if (S.content.type === 'live') attachStageVideo();
+    setTimeout(applyQuality, 500);
+  });
+  const gone = () => {
+    if (S.call === call) { S.call = null; setRemoteStream(null); return; }
+    const Y = [...S.extras.values()].find((x) => x.call === call);
+    if (Y) { Y.call = null; Y.stream = null; partyMedia(); }
+  };
+  call.on('close', gone);
+  call.on('error', gone);
+}
+
+// ---- 社内の人を呼び出して加える（まとめ役が呼ぶ。ほかの参加者が押したときは、まとめ役に頼む） ----
+function inviteMember(m) {
+  if (!m || !S.inCall || S.role !== 'host') return;
+  if (HOSTED || GUEST_MODE || !S.peer || !S.peer.open) { banner('このPCからは社内の人を呼び出せません'); return; }
+  if (S.party.list.some((p) => p.name === m.name) || (S.remoteName === m.name && !isGroup()) || m.id === S.meId) { banner(`${m.name} はすでに参加しています`); return; }
+  if (S.invites.has(m.id)) return;
+  if (partyCount() >= MAX_PARTY) { banner(`打ち合わせは${MAX_PARTY}人までです`, 5000); return; }
+  if (!S.uid) S.uid = newUid();
+  const c = S.peer.connect(pidOf(m.id), { reliable: true, metadata: { type: 'call', name: S.name, invite: secureId(12), party: rosterList().map((p) => p.name) } });
+  if (!c) return;
+  const inv = { c, m };
+  inv.done = (msg) => {
+    if (S.invites.get(m.id) !== inv) return;
+    S.invites.delete(m.id);
+    clearTimeout(inv.timer);
+    if (msg) { banner(msg, 6000); send({ t: 'msg', text: msg }); }
+    renderPartyDlg();
+  };
+  S.invites.set(m.id, inv);
+  inv.timer = setTimeout(() => {
+    try { c.send({ t: 'cancel' }); } catch { /* 未接続 */ }
+    setTimeout(() => c.close(), 500);
+    inv.done(`${m.name} は応答しませんでした`);
+  }, RING_TIMEOUT);
+  c.on('data', (x) => {
+    if (!x || S.invites.get(m.id) !== inv) return;
+    if (x.t === 'join') {
+      inv.done(null);
+      if (!S.inCall || partyCount() >= MAX_PARTY) { sendTo(c, { t: 'bye' }); setTimeout(() => c.close(), 500); return; }
+      c.removeAllListeners('data');
+      c.removeAllListeners('close');
+      acceptExtra(c, { name: m.name, member: m });
+    } else if (x.t === 'reject') {
+      inv.done(x.reason === 'callback' ? `${m.name}：「${CALLBACK_TEXT}」` : `${m.name} は今は出られません`);
+      setTimeout(() => c.close(), 500);
+    } else if (x.t === 'busy') {
+      inv.done(`${m.name} は通話中です`);
+      setTimeout(() => c.close(), 500);
+    }
+  });
+  c.on('close', () => inv.done(`${m.name} につながりませんでした`));
+  banner(`${m.name} を呼び出しています…`, 5000);
+  renderPartyDlg();
+}
+// 呼び出された側：「出る」→ まとめ役に参加を伝え、受け入れられたら打ち合わせに入る
+async function joinInvite(r) {
+  endRinging(r);
+  showCallOverlay('outgoing', r.name);
+  $('#callStatus').textContent = 'の打ち合わせに参加しています…';
+  await ensureMedia();
+  if (S.ringing || S.inCall) return;
+  if (r.cancelled || !r.c.open) { hideCallOverlay(); releaseMedia(); lobbyMsg(`${r.name} が呼び出しを取り消しました`); return; }
+  r.c.removeAllListeners('data');
+  r.c.removeAllListeners('close');
+  const o = { c: r.c, peerId: r.c.peer, name: r.name, reconnect: false, member: r.from };
+  S.outgoing = o;
+  o.timer = setTimeout(() => endOutgoing(o, '打ち合わせに参加できませんでした', 'net'), 15_000);
+  r.c.on('data', (m) => {
+    if (S.outgoing !== o || !m) return;
+    if (m.t === 'accept') onAccepted(o, m);
+    else if (m.t === 'bye') endOutgoing(o, '打ち合わせは終了していました', 'net');
+  });
+  r.c.on('close', () => { if (S.outgoing === o) endOutgoing(o, '打ち合わせに参加できませんでした', 'net'); });
+  r.c.send({ t: 'join' });
+}
+// 打ち合わせ中に、招待リンクから入室の希望が届いた
+function knockInCall(c, label, viaHub = false) {
+  startTone('chat');
+  notify(`${label} が入室を希望しています`, '図面テレビ電話');
+  c.on('close', () => { if (c._asking) banner(`${label} は入室の申し込みを取り消しました`, 5000); });
+  c._asking = true;
+  askConfirm(`${label} が招待リンクから入室を希望しています。この打ち合わせに入ってもらいますか？（今 ${partyCount()}人。最大${MAX_PARTY}人）`, '入室を許可').then((ok) => {
+    c._asking = false;
+    if (!S.inCall || !c.open) return;
+    if (ok && viaHub) {
+      const reqId = rid();
+      S.doorWait.set(reqId, c);
+      send({ t: 'door-req', reqId, hostName: S.meeting ? S.meeting.hostName : '' });
+      setTimeout(() => { if (S.doorWait.get(reqId) === c) { S.doorWait.delete(reqId); try { c.send({ t: 'reject' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); } }, 15_000);
+      return;
+    }
+    if (ok && partyCount() < MAX_PARTY) {
+      if (!S.external) { S.external = true; if (S.meeting && !S.callName) S.callName = S.meeting.hostName; buildQuick(); }
+      acceptExtra(c, { name: label, external: true });
+    } else {
+      try { c.send({ t: 'reject' }); } catch { /* 閉じている */ }
+      setTimeout(() => c.close(), 800);
+    }
+  });
+}
+
+// ---- 全員のチャット ----
+function receiveGroupChat(msg, name) {
+  if (!msg || !isId(msg.id) || typeof msg.text !== 'string') return;
+  const e = addChat(GRP, { id: msg.id, ts: finite(msg.ts) ? msg.ts : Date.now(), text: msg.text, from: 'them', name });
+  if (!e) return;
+  if (chat.open === GRP && document.visibilityState === 'visible') return;
+  startTone('chat');
+  notify(`${name} からメッセージ`, e.text.slice(0, 80));
+  banner(`${name}：${e.text.slice(0, 60)}`, 6000);
+}
+function addSysGroupChat(text) {
+  if (S.inCall && isGroup()) addChat(GRP, { from: 'sys', text, unread: false });
+}
+
+// ---- 参加者どうしの映像（まとめ役以外） ----
+function meshPeerObj() { return GUEST_MODE ? S.peer : S.meshPeer; }
+function myMeshId() { const p = meshPeerObj(); return p && p.open ? p.id : ''; }
+function ensureMesh() {
+  if (S.role === 'host' || !isGroup()) return;
+  if (!GUEST_MODE && (!S.meshPeer || S.meshPeer.destroyed)) {
+    const p = new Peer(peerOptions()); // 映像用の接続は毎回ランダムな ID（社内の接続IDは使わない）
+    S.meshPeer = p;
+    p.on('open', () => { if (S.meshPeer === p) { reportMesh(); syncMesh(); } });
+    p.on('call', onMediaCall);
+    p.on('connection', (c) => c.close());
+    p.on('disconnected', () => { if (S.meshPeer === p && !p.destroyed) { try { p.reconnect(); } catch { /* 作り直す */ } } });
+    p.on('error', (e) => console.warn('mesh', e.type));
+  }
+  reportMesh();
+  syncMesh();
+}
+function reportMesh() {
+  const id = myMeshId();
+  if (id && S.sentMesh !== id) { S.sentMesh = id; send({ t: 'mesh', id }); }
+}
+function meshOthers() { return S.party.list.filter((p) => p.uid !== S.uid && p.uid !== S.party.hub); }
+function syncMesh() {
+  if (S.role === 'host') return;
+  const others = meshOthers();
+  for (const [uid, v] of [...S.mesh]) if (!others.some((p) => p.uid === uid && p.mesh === v.peer)) dropMesh(uid);
+  for (const uid of [...S.relays.keys()]) if (!others.some((p) => p.uid === uid)) dropRelay(uid);
+  const mine = myMeshId();
+  if (!mine || !S.localStream || !isGroup()) return;
+  for (const p of others) {
+    // 2人のうち、ID の小さい方からかける（両方からかけて二重にならないように）
+    if (!p.mesh || S.mesh.has(p.uid) || !(mine < p.mesh)) continue;
+    const call = meshPeerObj().call(p.mesh, outStream(), { metadata: { g: S.party.id, uid: S.uid } });
+    if (call) bindMesh(p.uid, call);
+  }
+}
+function bindMesh(uid, call) {
+  const v = { call, peer: call.peer, stream: null, at: Date.now() };
+  S.mesh.set(uid, v);
+  call.on('stream', (st) => {
+    if (S.mesh.get(uid) !== v) return;
+    v.stream = st;
+    dropRelay(uid); // 直接つながったので中継は不要
+    partyMedia();
+    if (S.content.type === 'live') attachStageVideo();
+    setTimeout(applyQuality, 500);
+  });
+  const gone = () => {
+    if (S.mesh.get(uid) !== v) return;
+    S.mesh.delete(uid);
+    partyMedia();
+    setTimeout(syncMesh, 3000);
+  };
+  call.on('close', gone);
+  call.on('error', gone);
+}
+function acceptMesh(call) {
+  const md = call.metadata || {};
+  if (S.role === 'host' || !S.party.id || md.g !== S.party.id || !S.localStream) return false;
+  const p = meshOthers().find((x) => x.uid === md.uid && x.mesh === call.peer);
+  if (!p) return false;
+  const old = S.mesh.get(p.uid);
+  S.mesh.delete(p.uid);
+  if (old) { try { old.call.close(); } catch { /* 閉じている */ } }
+  call.answer(outStream());
+  bindMesh(p.uid, call);
+  return true;
+}
+function dropMesh(uid) {
+  const v = S.mesh.get(uid);
+  S.mesh.delete(uid);
+  if (v) { try { v.call.close(); } catch { /* 閉じている */ } }
+}
+function closeMesh() {
+  for (const uid of [...S.mesh.keys()]) dropMesh(uid);
+  for (const uid of [...S.relays.keys()]) dropRelay(uid);
+  S.meshWait.clear();
+}
+// 直接つながらない相手がいたら、まとめ役に中継を頼む（会社のネットワークの制限など）
+function meshCheck() {
+  if (!S.inCall || S.role === 'host' || !isGroup()) return;
+  reportMesh();
+  syncMesh();
+  const now = Date.now();
+  // かけたのに映像が来ない（相手がまだ一覧を受け取っていなかった等）→ かけ直す
+  for (const [uid, v] of [...S.mesh]) if (!v.stream && now - v.at > 12_000) dropMesh(uid);
+  for (const p of meshOthers()) {
+    if (p.down) { S.meshWait.delete(p.uid); continue; }
+    const ok = (S.mesh.get(p.uid) || {}).stream || (S.relays.get(p.uid) || {}).stream;
+    if (ok) { S.meshWait.delete(p.uid); continue; }
+    const w = S.meshWait.get(p.uid) || { since: now, asked: false };
+    S.meshWait.set(p.uid, w);
+    if (!w.asked && now - w.since > 20_000) { w.asked = true; send({ t: 'mesh-fail', uid: p.uid }); }
+  }
+}
+function acceptRelay(call, uid) {
+  if (!S.party.list.some((p) => p.uid === uid)) { call.close(); return; }
+  call.answer(); // 受け取るだけ
+  dropRelay(uid);
+  const v = { call, stream: null };
+  S.relays.set(uid, v);
+  call.on('stream', (st) => { if (S.relays.get(uid) === v) { v.stream = st; partyMedia(); if (S.content.type === 'live') attachStageVideo(); } });
+  const gone = () => { if (S.relays.get(uid) === v) { S.relays.delete(uid); S.meshWait.delete(uid); partyMedia(); } };
+  call.on('close', gone);
+  call.on('error', gone);
+}
+function dropRelay(uid) {
+  const v = S.relays.get(uid);
+  S.relays.delete(uid);
+  if (v) { try { v.call.close(); } catch { /* 閉じている */ } }
+}
+// まとめ役：c の相手へ、uid の人の映像を中継する
+function relayTo(c, uid) {
+  const to = uidOfConn(c);
+  const key = to + '>' + uid;
+  const st = streamOfWho(uid);
+  if (!to || uid === to || S.relayOut.has(key) || !st || !c.provider) return;
+  const call = c.provider.call(c.peer, st, { metadata: { relay: uid } });
+  if (!call) return;
+  S.relayOut.set(key, call);
+  const gone = () => { if (S.relayOut.get(key) === call) S.relayOut.delete(key); };
+  call.on('close', gone);
+  call.on('error', gone);
+}
+function closeRelaysOf(uid) {
+  for (const [key, call] of [...S.relayOut]) {
+    if (!key.split('>').includes(uid)) continue;
+    S.relayOut.delete(key);
+    try { call.close(); } catch { /* 閉じている */ }
+  }
+}
+// ---- 社外の方を、まとめ役の入口へ案内する（まとめ役でない人が招待リンクを持っているとき） ----
+function ensureDoor() {
+  return new Promise((res) => {
+    if (S.door && !S.door.destroyed && S.door.open) { res(S.door.id); return; }
+    if (!S.door || S.door.destroyed) {
+      const p = new Peer(peerOptions()); // 毎回ランダムな ID（社内の接続IDは知らせない）
+      S.door = p;
+      p.on('connection', (c) => c.on('open', () => { if (S.door === p && S.inCall) onKnock(c, true); else c.close(); }));
+      p.on('call', onMediaCall);
+      p.on('disconnected', () => { if (S.door === p && !p.destroyed) { try { p.reconnect(); } catch { /* 作り直す */ } } });
+      p.on('error', (e) => console.warn('door', e.type));
+    }
+    const p = S.door;
+    const to = setTimeout(() => res(''), 10_000);
+    p.once('open', () => { clearTimeout(to); res(p.id); });
+  });
+}
+async function openDoorFor(c, m) {
+  if (partyCount() >= MAX_PARTY) { sendTo(c, { t: 'door', reqId: m.reqId, full: true }); return; }
+  const id = await ensureDoor();
+  if (!id || !S.inCall) { sendTo(c, { t: 'door', reqId: m.reqId }); return; }
+  const ticket = secureId(20);
+  S.tickets.set(ticket, Date.now() + 60_000);
+  const hn = cleanText(m.hostName, 40);
+  if (hn && !S.callName) S.callName = hn;
+  sendTo(c, { t: 'door', reqId: m.reqId, id, ticket });
+}
+function onDoor(m) {
+  const c = S.doorWait.get(m.reqId);
+  if (!c) return;
+  S.doorWait.delete(m.reqId);
+  const ok = typeof m.id === 'string' && m.id.length <= 64 && typeof m.ticket === 'string' && m.ticket.length <= 64;
+  try { c.send(ok ? { t: 'redirect', door: m.id, ticket: m.ticket } : { t: 'reject' }); } catch { /* 閉じている */ }
+  if (!ok && m.full) banner(`打ち合わせは${MAX_PARTY}人までです`, 5000);
+  setTimeout(() => c.close(), 1500);
+}
+
+function resetParty() {
+  for (const X of S.extras.values()) {
+    clearTimeout(X.timer);
+    const { c, call } = X;
+    setTimeout(() => { try { call && call.close(); c && c.close(); } catch { /* 閉じている */ } }, 300);
+  }
+  S.extras.clear();
+  for (const inv of [...S.invites.values()]) { try { inv.c.send({ t: 'cancel' }); } catch { /* 未接続 */ } const c = inv.c; setTimeout(() => c.close(), 500); clearTimeout(inv.timer); }
+  S.invites.clear();
+  closeMesh();
+  for (const call of S.relayOut.values()) { try { call.close(); } catch { /* 閉じている */ } }
+  S.relayOut.clear();
+  if (S.meshPeer) { try { S.meshPeer.destroy(); } catch { /* 済み */ } S.meshPeer = null; }
+  if (S.door) { try { S.door.destroy(); } catch { /* 済み */ } S.door = null; }
+  S.tickets.clear();
+  for (const c of S.doorWait.values()) { try { c.close(); } catch { /* 閉じている */ } }
+  S.doorWait.clear();
+  S.uid = ''; S.partnerUid = ''; S.primaryMesh = ''; S.sentMesh = '';
+  S.party = { id: '', hub: '', list: [] };
+  S.grpChat = [];
+  if ($('#partyDlg').open) $('#partyDlg').close();
+  partyMedia();
+  $('#chatBtn').title = '通話相手とのチャット';
+}
+
+// ---- 画面：相手の映像を左の列に並べる（押すと大きく映す）・声を流す ----
+const tileEls = new Map();
+const audioEls = new Map();
+function partyMedia() {
+  const box = $('#peerTiles');
+  if (!box) return;
+  const group = isGroup();
+  const others = group ? S.party.list.filter((p) => p.uid !== S.uid) : [];
+  const live = S.content.type === 'live' ? S.content.who : null;
+  box.hidden = !others.length || box.dataset.closed === '1';
+  for (const [uid, t] of [...tileEls]) if (!others.some((p) => p.uid === uid)) { t.querySelector('video').srcObject = null; t.remove(); tileEls.delete(uid); }
+  for (const p of others) {
+    let t = tileEls.get(p.uid);
+    if (!t) {
+      t = document.createElement('button');
+      t.type = 'button';
+      t.className = 'ptile';
+      const v = document.createElement('video');
+      v.muted = true; v.autoplay = true; v.playsInline = true;
+      const lab = document.createElement('span');
+      lab.className = 'wipe-label';
+      t.append(v, lab);
+      t.addEventListener('click', () => showLive(p.uid));
+      box.appendChild(t);
+      tileEls.set(p.uid, t);
+    }
+    const st = streamOfWho(p.uid);
+    const v = t.querySelector('video');
+    if (v.srcObject !== st) { v.srcObject = st; if (st) v.play().catch(() => {}); }
+    t.querySelector('.wipe-label').textContent = p.name + (p.down ? '（再接続待ち）' : !st ? '（接続中…）' : '');
+    t.title = `${p.name} のカメラを大きく映す`;
+    t.classList.toggle('down', !st || !!p.down);
+    t.hidden = live === p.uid;
+  }
+  // 声：最初の相手は remoteAudio、ほかの人はそれぞれの audio で流す
+  const want = new Map();
+  if (group) for (const p of others) if (p.uid !== S.partnerUid) { const st = streamOfWho(p.uid); if (st) want.set(p.uid, st); }
+  for (const [uid, a] of [...audioEls]) if (!want.has(uid)) { a.srcObject = null; a.remove(); audioEls.delete(uid); }
+  for (const [uid, st] of want) {
+    let a = audioEls.get(uid);
+    if (!a) { a = document.createElement('audio'); a.autoplay = true; document.body.appendChild(a); audioEls.set(uid, a); }
+    if (a.srcObject !== st) { a.srcObject = st; a.play().catch(() => {}); }
+  }
+}
+
+// だれか1人を選ぶ（大きく映す人・撮影してもらう人）
+function pickPerson(title) {
+  const d = $('#pickDlg');
+  $('#pickTitle').textContent = title;
+  const list = $('#pickList');
+  list.innerHTML = '';
+  for (const p of S.party.list.filter((x) => x.uid !== S.uid)) {
+    const b = document.createElement('button');
+    b.className = 'ghost pick';
+    b.value = p.uid;
+    b.textContent = p.name;
+    list.appendChild(b);
+  }
+  d.returnValue = '';
+  d.showModal();
+  return new Promise((res) => d.addEventListener('close', () => res(isUid(d.returnValue) ? d.returnValue : null), { once: true }));
+}
+
+// ---- 「人を追加」：参加者の一覧と、社内の人の呼び出し ----
+function openPartyDlg() {
+  renderPartyDlg();
+  $('#partyDlg').showModal();
+}
+function renderPartyDlg() {
+  const d = $('#partyDlg');
+  if (!d) return;
+  const list = isGroup() || S.party.list.length ? S.party.list : [];
+  const people = list.length ? list.map((p) => ({ name: p.name + (p.uid === S.uid ? '（自分）' : '') + (p.uid === S.party.hub ? '・まとめ役' : '') + (p.down ? '・再接続待ち' : '') }))
+    : [{ name: `${myCallName()}（自分）` }, { name: S.remoteName }];
+  const n = Math.max(people.length, partyCount());
+  $('#partyCount').textContent = `${people.length}人（最大${MAX_PARTY}人）`;
+  const ul = $('#partyList');
+  ul.innerHTML = '';
+  for (const p of people) { const li = document.createElement('li'); li.textContent = p.name; ul.appendChild(li); }
+  // 社内の人を呼ぶ（社外の方の画面・Web 版には出さない）
+  const canCall = !GUEST_MODE && !HOSTED && !DEMO && !!S.meId && isInternalSelf();
+  $('#partyInvite').hidden = !canCall;
+  const ml = $('#partyMembers');
+  ml.innerHTML = '';
+  if (canCall) {
+    for (const m of MEMBERS) {
+      if (m.id === S.meId) continue;
+      const li = document.createElement('li');
+      const nm = document.createElement('span');
+      nm.textContent = m.name;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'primary small';
+      const inParty = people.some((p) => p.name.startsWith(m.name)) || S.remoteName === m.name;
+      const calling = S.invites.has(m.id);
+      b.textContent = inParty ? '参加中' : calling ? '呼び出し中…' : '呼ぶ';
+      b.disabled = inParty || calling || n >= MAX_PARTY;
+      b.addEventListener('click', () => {
+        if (S.role === 'host') inviteMember(m);
+        else { send({ t: 'invite', id: m.id }); banner(`${m.name} の呼び出しを、まとめ役（${S.remoteName}）のPCに頼みました`, 5000); }
+        b.disabled = true; b.textContent = '呼び出し中…';
+      });
+      li.append(nm, b);
+      ml.appendChild(li);
+    }
+  }
+  const hint = $('#partyLinkHint');
+  const copy = $('#partyCopyBtn');
+  copy.hidden = true;
+  if (S.role === 'host' && S.meeting) {
+    hint.textContent = `社外の方は、招待リンク（${S.meeting.label || '招待リンク'}）から入室を申し込むと、この画面に確認が出ます。「入室を許可」すると参加できます。`;
+    copy.hidden = false;
+  } else if (S.role === 'host' && !GUEST_MODE) {
+    hint.textContent = '社外の方を入れるときは、待受画面の「社外の方との打ち合わせ」で招待リンクを作って送ってください（打ち合わせ中に作ることはできません）。';
+  } else {
+    hint.textContent = GUEST_MODE ? 'ほかの方の参加は、招待した側が受け付けます。' : `社外の方の参加は、まとめ役（${S.remoteName}）の招待リンクから受け付けます。`;
+  }
+}
+// 自分が社内の人か（社外の方との打ち合わせに参加している社内の人も、社内の人を呼べる）
+function isInternalSelf() { return !GUEST_MODE && !HOSTED; }
 
 // ===================================================================
 // 社外の方との打ち合わせ（招待リンク）
@@ -3332,7 +4129,7 @@ function meetWatchdog() {
   else if (mt.peer.disconnected) { try { mt.peer.reconnect(); } catch { mt.peer.destroy(); } }
 }
 // 招待リンクからの入室の希望
-function onKnock(c) {
+function onKnock(c, door = false) {
   const md = c.metadata || {};
   if (md.type !== 'join') { c.close(); return; }
   const name = cleanText(md.name, 30) || 'お名前なし';
@@ -3341,10 +4138,26 @@ function onKnock(c) {
   if (md.token) {
     // 打ち合わせ中の回線断からの再接続 → 鳴らさずにそのままつなぐ（同じ相手・同じ合言葉のときだけ）
     if (S.inCall && S.external && md.token === S.token && c.peer === S.partner) { acceptConn(c); return; }
+    const X = S.inCall && S.role === 'host' && extraByToken(md.token, c.peer);
+    if (X) { reacceptExtra(X, c); return; }
     try { c.send({ t: 'bye' }); } catch { /* 閉じている */ }
     setTimeout(() => c.close(), 800);
     return;
   }
+  // 入口から：ほかの参加者がすでに許可した方 → 確認せずに入ってもらう
+  if (door) {
+    const exp = typeof md.ticket === 'string' && S.tickets.get(md.ticket);
+    if (exp) S.tickets.delete(md.ticket);
+    if (exp && exp > Date.now() && S.inCall && S.role === 'host' && partyCount() < MAX_PARTY) {
+      if (!S.external) { S.external = true; buildQuick(); }
+      acceptExtra(c, { name: label, external: true });
+    } else { try { c.send({ t: 'reject' }); } catch { /* 閉じている */ } setTimeout(() => c.close(), 800); }
+    return;
+  }
+  // 打ち合わせ中でも、まとめ役なら途中から入ってもらえる（最大6人）
+  if (S.inCall && S.role === 'host' && !S.ringing && partyCount() < MAX_PARTY) { knockInCall(c, label); return; }
+  // まとめ役でないときは、確認してから、まとめ役の入口へ案内する
+  if (S.inCall && S.role === 'guest' && !S.ringing && S.conn && S.conn.open && Math.max(2, S.party.list.length) < MAX_PARTY) { knockInCall(c, label, true); return; }
   if (S.inCall || S.ringing || S.outgoing) {
     try { c.send({ t: 'busy' }); } catch { /* 閉じている */ }
     setTimeout(() => c.close(), 800);
@@ -3778,6 +4591,9 @@ async function init() {
   new ResizeObserver(() => { if (!el.room.hidden) layout(); }).observe(el.stage);
   requestAnimationFrame(drawPointers);
   setInterval(pollStats, 2000);
+  setInterval(meshCheck, 5000);
+  $('#tilesHideBtn').addEventListener('click', () => { $('#peerTiles').dataset.closed = '1'; partyMedia(); });
+  $('#partyCopyBtn').addEventListener('click', async () => { const mt = S.meeting; if (!mt) return; try { await navigator.clipboard.writeText(meetLink(mt)); banner('招待リンクをコピーしました', 3000); } catch { banner(meetLink(mt), 10_000); } });
   audioCtx(); // 起動オプションで自動再生が許可されていれば、この時点で着信音が使える
   setInterval(updateBellHint, 1000);
   if (!navigator.mediaDevices || !window.RTCPeerConnection) {
@@ -3789,6 +4605,7 @@ async function init() {
   }
   if (DEMO) {
     document.body.classList.add('demo');
+    $('#addBtn').hidden = true; // デモは1台だけなので、人は追加できない
   }
   // 議事録の自動作成は保留中：議事録のボタンを出さない（文字起こし・字幕は使える）
   if (!MINUTES_ON) {

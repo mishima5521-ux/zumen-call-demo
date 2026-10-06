@@ -195,6 +195,8 @@
       <div class="wipe-resize"></div>
     </div>
 
+    <!-- 複数人の打ち合わせ：ほかの参加者の映像（押すと大きく映す） -->
+    <div id="peerTiles" class="peer-tiles" hidden><button id="tilesHideBtn" class="tiles-hide" type="button" title="参加者の映像を隠す（「ワイプ」でまた表示）">隠す</button></div>
     <div id="captions" class="captions" aria-live="polite"></div>
     <div id="banner" hidden></div>
     <button id="fullExitBtn" class="full-exit" type="button" hidden>全画面を終わる</button>
@@ -231,6 +233,7 @@
       <button id="clearBtn" class="tool" title="このページの書き込みを全部消す">全消去</button>
     </div>
     <div class="grp">
+      <button id="addBtn" class="tool wide" title="打ち合わせに人を加える（最大6人）・参加者の一覧">人を追加</button>
       <button id="liveRemoteBtn" class="tool wide" title="相手のカメラ映像を大きく表示">相手のカメラ</button>
       <button id="flipBtn" class="tool wide" title="カメラを切り替える（スマホは外側／内側）" hidden>カメラ切替</button>
       <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
@@ -337,6 +340,30 @@
     <h2>議事録の履歴（このPCに保存）</h2>
     <ul id="minutesList" class="minutes-list"></ul>
     <div class="row end"><button class="primary" value="close">閉じる</button></div>
+  </form>
+</dialog>
+
+<!-- ===== 複数人の打ち合わせ ===== -->
+<dialog id="partyDlg">
+  <form method="dialog">
+    <h2>打ち合わせの参加者 <small id="partyCount" class="party-count"></small></h2>
+    <ul id="partyList" class="party-list"></ul>
+    <div id="partyInvite">
+      <h3 class="party-sub">社内の人を呼ぶ</h3>
+      <ul id="partyMembers" class="party-list members"></ul>
+    </div>
+    <p id="partyLinkHint" class="hint"></p>
+    <div class="row end">
+      <button id="partyCopyBtn" class="ghost" type="button" hidden>招待リンクをコピー</button>
+      <button class="primary" value="ok">閉じる</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pickDlg">
+  <form method="dialog">
+    <h2 id="pickTitle"></h2>
+    <div id="pickList" class="pick-list"></div>
+    <div class="row end"><button class="ghost" value="cancel">やめる</button></div>
   </form>
 </dialog>
 
