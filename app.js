@@ -34,6 +34,8 @@ const HOSTED = !!CFG.hosted;
 // 議事録の自動作成（文字起こし＋AI）は保留中。config.js で minutes: true にしたときだけ使う
 const MINUTES_ON = CFG.minutes === true;
 const DEFAULT_JOIN_URL = 'https://mishima5521-ux.github.io/zumen-call-demo/meet/';
+// 画面のデザイン（theme.js）。読み込めなかったときは今までのデザインのまま動く
+const TH = window.ZumenTheme || null;
 // 推測されない乱数（部屋番号・再接続の合言葉に使う）
 const secureId = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => 'abcdefghijkmnpqrstuvwxyz23456789'[b & 31]).join('');
 const cleanText = (v, n = 40) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -852,7 +854,9 @@ async function waitDrain() {
 }
 
 function sendHello() {
-  send({ t: 'hello', name: myCallName(), docs: [...S.docs.keys()], contentTs: S.contentTs, role: S.role });
+  const m = { t: 'hello', name: myCallName(), docs: [...S.docs.keys()], contentTs: S.contentTs, role: S.role };
+  if (S.external && S.role === 'host' && TH) Object.assign(m, themeMsg());
+  send(m);
 }
 
 // ===================================================================
@@ -1019,6 +1023,7 @@ function showCallOverlay(kind, name, { keepDialogs = false } = {}) {
   $('#declineBtn').textContent = kind === 'knock' ? 'お断りする' : '何も伝えずに拒否';
   $('#cancelBtn').hidden = ringing;
   $('#cancelBtn').textContent = GUEST_MODE ? '申し込みをやめる' : '取り消す';
+  $$('#callOverlay .shot').forEach((x) => x.remove());
   $('#callOverlay').dataset.kind = kind;
   $('#callOverlay').classList.remove('flash');
   $('#callOverlay').hidden = false;
@@ -1605,6 +1610,7 @@ function onMessage(m) {
     case 'chat': { const id = partnerChatId(); if (id) receiveChat(id, m.msg, null); break; }
     case 'chat-ack': { const id = partnerChatId(); if (id && isId(m.id)) markSent(id, m.id); break; }
     case 'hello': onHello(m); break;
+    case 'theme': applyHostTheme(m); break;
     case 'state': onState(m); break;
     case 'fb': fileBegin(m); break;
     case 'fc': fileChunk(m); break;
@@ -1652,6 +1658,7 @@ function onMessage(m) {
 }
 
 function onHello(m) {
+  applyHostTheme(m);
   // 社外の方の名前は入室時のもの（〇〇様）を使い続ける
   if (m.name && !(S.external && S.role === 'host')) S.remoteName = cleanText(m.name, 60);
   const theirs = Array.isArray(m.docs) ? m.docs.filter(isId).slice(0, 500) : [];
@@ -2979,6 +2986,9 @@ function meetLink(mt) {
   const q = keep.length ? '?' + keep.map((k) => `${k}=${encodeURIComponent(QS.get(k))}`).join('&') : '';
   const h = new URLSearchParams({ j: mt.id });
   if (mt.hostName) h.set('n', mt.hostName);
+  // 社外の方の画面も、こちらで選んだデザインで表示する（狙撃の効果音を切っているときは、相手側も鳴らさない）
+  if (TH && TH.current() !== TH.DEFAULT) h.set('t', TH.current());
+  if (TH && TH.current() === 'sniper' && !TH.sound()) h.set('s', '0');
   return joinBase().replace(/[?#].*$/, '') + q + '#' + h.toString();
 }
 const loadMeetings = () => (store.get('meetings', []) || []).filter((r) => r && /^[a-z2-9]{20,40}$/.test(r.id));
@@ -3131,7 +3141,9 @@ function setupGuest() {
   document.title = appTitle + (host ? `（${host}）` : '');
   $('#guestName').value = store.get('guestName', '');
   $('#guestCompany').value = store.get('guestCompany', '');
-  $('#guestForm').addEventListener('submit', (e) => { e.preventDefault(); guestJoin(); });
+  let joinClick = null;
+  $('#guestJoinBtn').addEventListener('click', (e) => { joinClick = e; });
+  $('#guestForm').addEventListener('submit', (e) => { e.preventDefault(); snipe(joinClick, $('#guestJoinBtn'), guestJoin); joinClick = null; });
   $('#guestCancelBtn').addEventListener('click', guestCancel);
   $('#guestCamBtn').addEventListener('click', () => { if (S.localStream) releaseMedia(); else ensureMedia(); });
   $('#guestCam').addEventListener('change', (e) => switchCamera(e.target.value));
@@ -3376,6 +3388,77 @@ function stopAlertTest() {
   if (!S.ringing && !S.outgoing) { hideCallOverlay(); stopAlert(); }
 }
 
+// ---- 画面のデザイン（このPCだけの設定。社外の方の画面も、これに合わせて表示する） ----
+const themeMsg = () => ({ theme: TH.current(), fx: TH.sound() });
+// 社外の方の画面：招待した側のデザインに合わせる（保存はしない）
+function applyHostTheme(m) {
+  if (!GUEST_MODE || !TH) return;
+  if (typeof m.theme === 'string' && TH.valid(m.theme)) TH.set(m.theme, { save: false });
+  if (typeof m.fx === 'boolean') TH.setSound(m.fx, { save: false });
+}
+// 案42「狙撃」のときは、ボタンを撃ち抜く動きを見せてから処理する。効果音は押したこの端末だけで鳴る（相手には送らない）
+function snipe(e, btn, fn) {
+  if (!TH || !TH.snipes()) { fn(); return; }
+  TH.shoot(btn, e);
+  if (btn.dataset.firing) return; // 続けて押しても、処理は1回だけ
+  btn.dataset.firing = '1';
+  setTimeout(() => { delete btn.dataset.firing; fn(); }, TH.shotMs());
+}
+function renderThemeChoices() {
+  const cur = TH.current();
+  const list = $('#themeList');
+  list.innerHTML = '';
+  for (const t of TH.list) {
+    const lab = document.createElement('label');
+    lab.className = 'theme-opt';
+    const r = document.createElement('input');
+    r.type = 'radio';
+    r.name = 'theme';
+    r.value = t.id;
+    r.checked = t.id === cur;
+    const sw = document.createElement('span');
+    sw.className = 'theme-sw';
+    for (const c of t.sw) { const i = document.createElement('i'); i.style.background = c; sw.appendChild(i); }
+    const nm = document.createElement('span');
+    nm.className = 'theme-name';
+    const b = document.createElement('b');
+    b.textContent = t.name;
+    const sm = document.createElement('small');
+    sm.textContent = t.no + (t.id === TH.DEFAULT ? '（はじめのデザイン）' : '');
+    nm.append(b, sm);
+    lab.append(r, sw, nm);
+    list.appendChild(lab);
+  }
+  $('#sniperOpts').hidden = cur !== 'sniper';
+  $('#fxSoundChk').checked = TH.sound();
+}
+function chooseTheme(id) {
+  TH.set(id);
+  $('#sniperOpts').hidden = TH.current() !== 'sniper';
+  $('#setTheme').value = TH.current();
+  themeChanged();
+}
+// 招待リンクを作り直し、打ち合わせ中なら社外の方の画面も切り替える
+function themeChanged() {
+  renderMeet();
+  if (S.inCall && S.external && S.role === 'host') send({ t: 'theme', ...themeMsg() });
+}
+function setupTheme() {
+  if (!TH) { $('#themeBtn').hidden = true; $('#setTheme').closest('label').hidden = true; return; }
+  $('#themeBtn').addEventListener('click', () => {
+    renderThemeChoices();
+    $$('#fxTestBtn .shot').forEach((x) => x.remove());
+    $('#themeDlg').showModal();
+  });
+  $('#themeList').addEventListener('change', (e) => { if (e.target.name === 'theme') chooseTheme(e.target.value); });
+  $('#fxSoundChk').addEventListener('change', (e) => { TH.setSound(e.target.checked); themeChanged(); });
+  $('#fxTestBtn').addEventListener('click', (e) => snipe(e, e.currentTarget, () => {}));
+  const sel = $('#setTheme');
+  for (const t of TH.list) sel.add(new Option(`${t.no} ${t.name}`, t.id));
+  sel.value = TH.current();
+  sel.addEventListener('change', (e) => chooseTheme(e.target.value));
+}
+
 function setupMeet() {
   $('#meetCreateBtn').addEventListener('click', createMeeting);
   $('#meetEndBtn').addEventListener('click', async () => {
@@ -3404,9 +3487,9 @@ function setupLobby() {
   $('#changeMeBtn').addEventListener('click', () => { if (!S.inCall) showSetup(); });
   el.lobbyCam.addEventListener('change', async (e) => { await switchCamera(e.target.value); });
   el.lobbyMic.addEventListener('change', async (e) => { await switchMic(e.target.value); });
-  $('#answerBtn').addEventListener('click', () => { unlockSound(); answer(); });
-  $('#callbackBtn').addEventListener('click', () => decline('callback'));
-  $('#declineBtn').addEventListener('click', () => decline('reject'));
+  $('#answerBtn').addEventListener('click', (e) => { unlockSound(); snipe(e, e.currentTarget, answer); });
+  $('#callbackBtn').addEventListener('click', (e) => snipe(e, e.currentTarget, () => decline('callback')));
+  $('#declineBtn').addEventListener('click', (e) => snipe(e, e.currentTarget, () => decline('reject')));
   $('#cancelBtn').addEventListener('click', cancelCall);
   $('#previewBtn').addEventListener('click', () => { if (S.localStream) releaseMedia(); else ensureMedia(); });
   // 着信の知らせ方
@@ -3414,6 +3497,7 @@ function setupLobby() {
   $('#alertTestBtn').addEventListener('click', testAlert);
   $('#alertDlg').addEventListener('change', readAlertSettings);
   $('#alertDlg').addEventListener('close', () => { readAlertSettings(); stopAlertTest(); });
+  setupTheme();
   // チャット
   $('#chatCloseBtn').addEventListener('click', closeChat);
   $('#chatForm').addEventListener('submit', (e) => {

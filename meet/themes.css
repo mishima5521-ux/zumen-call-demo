@@ -1,0 +1,578 @@
+/* 画面のデザイン（設定の「画面のデザイン」で切り替える）
+ * 何も選んでいないときは style.css の「妖刀（墨と朱）」= 案8
+ * 色は style.css の変数（--paper・--bar・--card など）を差し替え、形の違うところだけ個別に上書きする
+ */
+
+/* ===================================================================
+   共通：着信の札の朱の一筆は「妖刀」だけ
+   =================================================================== */
+[data-theme="neon"] .call-brush, [data-theme="mirror"] .call-brush, [data-theme="comic"] .call-brush,
+[data-theme="varsity"] .call-brush, [data-theme="sniper"] .call-brush { display: none; }
+
+/* ===================================================================
+   案16 ネオン横丁：夜の路地のネオン管（ピンク・シアン・黄）
+   =================================================================== */
+[data-theme="neon"] {
+  --bg: #0a0718; --paper: #140f2b; --panel: #140f2b; --panel-2: #0b0820; --line: #3a3366;
+  --ink: #6a5acd; --ink-2: #140f2b; --text: #f3eeff; --muted: #b5acdf;
+  --accent: #ff2e88; --accent-dark: #ff8fc4; --accent-text: #1a0010;
+  --ok: #5cffa8; --ok-light: #5cffa8; --warn: #ffe600; --gold: #ffe600; --bad: #ff2e88;
+  --stage: #07051a; --stage-text: #c9c1f0; --radius: 10px;
+  --brush: "RocknRoll One", "M PLUS 1p", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --font: "M PLUS 1p", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --field: #07051a;
+  --bar: #0b0820; --bar-text: #f3eeff; --bar-soft: #c9c1f0; --bar-muted: #9c93c9; --bar-line: #6a5acd; --bar-line-2: #3a3366; --bar-2: #140f2b;
+  --tab: #140f2b; --off: #3a0d24; --off-line: #ff2e88;
+  --overlay: rgba(6, 4, 18, .9);
+  --card: #120d26; --card-text: #f3eeff; --card-soft: #ff9fcb; --card-muted: #9c93c9; --card-line: #ffe600;
+  --answer: #00f0ff; --answer-text: #04121a;
+  color-scheme: dark;
+}
+[data-theme="neon"] body { background-image: linear-gradient(0deg, rgba(255,255,255,.025) 1px, transparent 1px); background-size: 100% 26px; }
+[data-theme="neon"] button.primary, [data-theme="neon"] button.ghost, [data-theme="neon"] .tbtn, [data-theme="neon"] .tool { border-radius: 10px; }
+[data-theme="neon"] button.primary { border: 0; background: #ff2e88; color: #1a0010; box-shadow: 0 0 14px rgba(255,46,136,.8), 0 0 34px rgba(255,46,136,.35); }
+[data-theme="neon"] button.primary:active { transform: translateY(1px); box-shadow: 0 0 8px rgba(255,46,136,.8); }
+[data-theme="neon"] button.ghost { border: 2px solid #6a5acd; }
+[data-theme="neon"] button.big.primary { font-family: var(--brush); font-weight: 400; letter-spacing: .2em; font-size: 20px; }
+[data-theme="neon"] input, [data-theme="neon"] select { border: 2px solid #6a5acd; border-radius: 10px; color: #fff; }
+[data-theme="neon"] button:focus-visible, [data-theme="neon"] input:focus-visible, [data-theme="neon"] select:focus-visible { outline-color: #00f0ff; }
+/* 待受・入室画面 */
+[data-theme="neon"] .lobby-card, [data-theme="neon"] .guest-card { border: 3px solid #ff2e88; border-radius: 18px; box-shadow: 0 0 18px #ff2e88, inset 0 0 18px rgba(255,46,136,.35); }
+[data-theme="neon"] .lobby-head h1, [data-theme="neon"] .guest-card h1 {
+  background: none; padding: 0; font-family: var(--brush); font-weight: 400; letter-spacing: .04em;
+  color: #ffe1f0; text-shadow: 0 0 6px #ff2e88, 0 0 16px #ff2e88, 0 0 32px #ff2e88;
+}
+[data-theme="neon"] .lobby-card h2 { color: #9ff9ff; border-bottom-color: #00f0ff; letter-spacing: .2em; text-shadow: 0 0 8px rgba(0,240,255,.7); }
+[data-theme="neon"] .guest-host { color: #9ff9ff; text-shadow: 0 0 8px rgba(0,240,255,.7); }
+[data-theme="neon"] .lobby-preview { border: 2px solid #00f0ff; border-radius: 12px; box-shadow: 0 0 12px rgba(0,240,255,.6); }
+[data-theme="neon"] .me-status { border-color: #ffe600; color: #ffe600; border-radius: 999px; box-shadow: 0 0 8px rgba(255,230,0,.5); }
+[data-theme="neon"] .avatar { background: transparent; border: 3px solid #00f0ff; color: #d9fdff; box-shadow: 0 0 10px #00f0ff, inset 0 0 8px rgba(0,240,255,.5); text-shadow: 0 0 8px #00f0ff; }
+[data-theme="neon"] .meet { border: 2px solid #00f0ff; border-radius: 14px; background: #0b0820; box-shadow: 0 0 12px rgba(0,240,255,.45); }
+[data-theme="neon"] .meet h3 { color: #c9c1f0; }
+[data-theme="neon"] .linkbtn { color: #9ff9ff; }
+/* 着信・発信 */
+[data-theme="neon"] .call-card { border-radius: 18px; box-shadow: 0 0 22px #ffe600, inset 0 0 22px rgba(255,230,0,.25); }
+[data-theme="neon"] .call-kanji {
+  height: auto; padding: 12px 16px; border: 3px solid #ff2e88; border-radius: 12px;
+  box-shadow: 0 0 14px #ff2e88, inset 0 0 10px rgba(255,46,136,.4);
+  font-family: var(--brush); font-size: 64px; line-height: 1.05; color: #fffbd1; text-shadow: 0 0 6px #ffe600, 0 0 18px #ffe600, 0 0 40px #ff9f00;
+}
+[data-theme="neon"] .call-avatar { margin-top: 18px; border-radius: 50%; border: 4px solid #00f0ff; background: transparent; color: #d9fdff; transform: none; box-shadow: 0 0 18px #00f0ff, inset 0 0 14px rgba(0,240,255,.5); text-shadow: 0 0 10px #00f0ff; }
+[data-theme="neon"] .call-actions button { border-radius: 14px; border: 2px solid #6a5acd; background: transparent; }
+[data-theme="neon"] .call-actions .answer { background: var(--answer); color: var(--answer-text); border: 0; font-size: 26px; box-shadow: 0 0 22px #00f0ff; }
+[data-theme="neon"] .call-actions .decline { border: 0; background: #ff2e88; color: #1a0010; box-shadow: 0 0 18px #ff2e88; }
+/* チャット */
+[data-theme="neon"] .chat { border-left: 3px solid #00f0ff; box-shadow: -4px 0 22px rgba(0,240,255,.45); }
+[data-theme="neon"] .chat-head { border-bottom: 2px solid #ff2e88; }
+[data-theme="neon"] .chat-row.me .bubble { background: #ff2e88; color: #1a0010; border-radius: 14px 14px 4px 14px; }
+[data-theme="neon"] .chat-row.them .bubble { background: #0b0820; border-color: #00f0ff; border-radius: 14px 14px 14px 4px; }
+[data-theme="neon"] .quick { border-color: #6a5acd; border-radius: 999px; }
+[data-theme="neon"] .chat-form { border-top-color: #ff2e88; }
+/* 通話中 */
+[data-theme="neon"] .topbar { border-bottom: 2px solid #ff2e88; }
+[data-theme="neon"] .tbtn { border-width: 2px; }
+[data-theme="neon"] .tbtn.danger { border-color: #ff2e88; color: #1a0010; box-shadow: 0 0 12px #ff2e88; }
+[data-theme="neon"] .q select { border-radius: 10px; }
+[data-theme="neon"] .wipe { border: 3px solid #ff2e88; outline: 0; border-radius: 12px; box-shadow: 0 0 14px #ff2e88; }
+[data-theme="neon"] .wipe.self { border-color: #00f0ff; box-shadow: 0 0 14px #00f0ff; }
+[data-theme="neon"] .wipe-label { border-radius: 8px 8px 0 0; color: #1a0010; font-family: var(--font); font-weight: 800; font-size: 13px; }
+[data-theme="neon"] .wipe.self .wipe-label { background: #00f0ff; color: #04121a; }
+[data-theme="neon"] .toolbar { background: #0b0820; border-top: 2px solid #ffe600; }
+[data-theme="neon"] .tool { border: 2px solid #6a5acd; }
+[data-theme="neon"] .tool.on, [data-theme="neon"] #trBtn.on, [data-theme="neon"] #shareBtn.on { border-color: #ffe600; background: #ffe600; color: #1a1400; box-shadow: 0 0 12px #ffe600; }
+[data-theme="neon"] #openBtn, [data-theme="neon"] #liveRemoteBtn:not(.on), [data-theme="neon"] #fullBtn { border-color: #00f0ff; background: transparent; color: #9ff9ff; box-shadow: 0 0 8px rgba(0,240,255,.6); }
+[data-theme="neon"] .grp { border-right-color: #3a3366; }
+[data-theme="neon"] .swatch.on { border-color: #fff; box-shadow: 0 0 0 2px #ff2e88, 0 0 10px #ff2e88; }
+[data-theme="neon"] .tabbar { background: #0b0820; border-top: 2px solid #ff2e88; }
+[data-theme="neon"] .tab { margin: -2px 4px 0 0; border: 2px solid #3a3366; border-top: 0; border-radius: 0 0 10px 10px; }
+[data-theme="neon"] .tab.on { background: #140f2b; border-color: #ffe600; box-shadow: 0 0 10px rgba(255,230,0,.6); }
+[data-theme="neon"] .tab.on .tab-main { color: #fffbd1; }
+[data-theme="neon"] .tab-ic { background: #3a3366; border-radius: 4px; }
+[data-theme="neon"] .tab.on .tab-ic { background: #ffe600; color: #1a1400; }
+[data-theme="neon"] .tab-add { border-color: #6a5acd; border-radius: 10px; }
+/* ダイアログ */
+[data-theme="neon"] dialog { border: 3px solid #00f0ff; border-radius: 16px; box-shadow: 0 0 24px rgba(0,240,255,.6); }
+[data-theme="neon"] dialog::backdrop { background: rgba(6,4,18,.7); }
+[data-theme="neon"] dialog h2 { color: #ffe1f0; text-shadow: 0 0 8px #ff2e88; }
+[data-theme="neon"] fieldset { border-color: #3a3366; border-radius: 10px; }
+[data-theme="neon"] .minutes-list button { border-color: #6a5acd; border-radius: 10px; }
+@media (max-width: 720px) {
+  [data-theme="neon"] .call-kanji { font-size: 52px; }
+}
+@media (max-height: 640px) {
+  [data-theme="neon"] .call-kanji { writing-mode: horizontal-tb; padding: 4px 14px; font-size: 40px; }
+  [data-theme="neon"] .call-avatar { margin-top: 6px; }
+}
+
+/* ===================================================================
+   案19 鏡面仕上げ：黒地に、鏡のような銀と金
+   =================================================================== */
+[data-theme="mirror"] {
+  --bg: #050505; --paper: #e6e9ed; --panel: #e6e9ed; --panel-2: #0b0b0b; --line: #8e949c;
+  --ink: #5a5f66; --ink-2: #1a1a1a; --text: #111111; --muted: #44484e;
+  --accent: #c9a13b; --accent-dark: #6b4e0e; --accent-text: #1a1200;
+  --ok: #2e6b3e; --ok-light: #6fd08a; --warn: #7a5a12; --gold: #d4af37; --bad: #8b1a1a;
+  --stage: #141414; --stage-text: #c9cdd3; --radius: 4px;
+  --brush: "Zen Old Mincho", "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", serif;
+  --font: "Zen Old Mincho", "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "BIZ UDPMincho", serif;
+  --field: rgba(255,255,255,.85);
+  --bar: #0b0b0b; --bar-text: #f4f4f4; --bar-soft: #c9cdd3; --bar-muted: #8e949c; --bar-line: #d4af37; --bar-line-2: #5a5f66; --bar-2: #1a1a1a;
+  --tab: transparent; --off: #f3d6d6; --off-line: #8b1a1a;
+  --overlay: rgba(0,0,0,.9);
+  --card: #0b0b0b; --card-text: #f4f4f4; --card-soft: #c9cdd3; --card-muted: #8e949c; --card-line: #d4af37;
+  --answer: linear-gradient(135deg, #7a5a12 0%, #f7e08a 34%, #c9a13b 58%, #fff3b0 80%, #8a6a1f 100%); --answer-text: #1a1200;
+  --gold-grad: linear-gradient(135deg, #7a5a12 0%, #f7e08a 34%, #c9a13b 58%, #fff3b0 80%, #8a6a1f 100%);
+  --silver-grad: linear-gradient(135deg, #f2f4f7 0%, #a9afb8 22%, #ffffff 38%, #8e949c 56%, #e6e9ed 74%, #9aa0a8 100%);
+}
+[data-theme="mirror"] body {
+  background: linear-gradient(168deg, transparent 0 46.9%, rgba(212,175,55,.45) 47% 47.2%, transparent 47.3% 49.6%, rgba(142,148,156,.5) 49.7% 49.8%, transparent 49.9%) fixed,
+    radial-gradient(ellipse at 50% 0%, rgba(212,175,55,.14), transparent 60%) fixed, #050505;
+}
+[data-theme="mirror"] button.primary, [data-theme="mirror"] button.ghost, [data-theme="mirror"] .tbtn, [data-theme="mirror"] .tool { border-radius: 4px; }
+[data-theme="mirror"] button.primary { border: 0; background: var(--gold-grad); color: #1a1200; font-weight: 900; box-shadow: 0 0 0 2px #1a1200, 0 8px 16px rgba(0,0,0,.35); }
+[data-theme="mirror"] button.primary:active { transform: translateY(1px); box-shadow: 0 0 0 2px #1a1200; }
+[data-theme="mirror"] button.ghost { border: 1px solid #5a5f66; background: rgba(255,255,255,.5); }
+[data-theme="mirror"] button.big.primary { letter-spacing: .3em; }
+[data-theme="mirror"] input, [data-theme="mirror"] select { border: 1px solid #5a5f66; border-radius: 4px; }
+/* 待受・入室画面 */
+[data-theme="mirror"] .lobby-card, [data-theme="mirror"] .guest-card { background: var(--silver-grad); border: 0; border-radius: 6px; box-shadow: 0 0 0 2px #d4af37, 0 24px 50px rgba(0,0,0,.7); }
+[data-theme="mirror"] .lobby-head h1, [data-theme="mirror"] .guest-card h1 { background: none; padding: 0; color: #111; font-family: var(--font); font-weight: 900; font-size: 28px; letter-spacing: .06em; }
+[data-theme="mirror"] .lobby-head h1::before, [data-theme="mirror"] .guest-card h1::before {
+  content: 'ZUMEN  ·  CALL'; display: block; margin-bottom: 2px; white-space: pre;
+  font: 800 12px/1.6 "Cinzel", serif; letter-spacing: .4em; color: #5c4410;
+}
+[data-theme="mirror"] .guest-card h1::before { content: 'ONLINE  MEETING'; }
+[data-theme="mirror"] .lobby-card h2 { border-bottom: 2px solid #d4af37; font-weight: 900; }
+[data-theme="mirror"] .lobby-preview { border: 0; border-radius: 4px; background: #0a0a0a; box-shadow: inset 0 0 0 2px #d4af37; }
+[data-theme="mirror"] .me-status { border-color: #d4af37; color: #5c4410; }
+[data-theme="mirror"] .avatar { color: #f7e08a; font-weight: 900; box-shadow: 0 0 0 2px #d4af37, 0 0 0 4px #a9afb8; }
+[data-theme="mirror"] .contact { border-bottom-color: #8e949c; }
+[data-theme="mirror"] .meet { background: rgba(255,255,255,.55); border: 1px solid #8e949c; border-radius: 6px; }
+[data-theme="mirror"] .nocam button.ghost { background: transparent; border-color: #d4af37; color: #f7e08a; }
+/* 着信・発信 */
+[data-theme="mirror"] .call-card { border: 0; border-radius: 6px; box-shadow: 0 0 0 2px #d4af37, 0 0 60px rgba(212,175,55,.25); }
+[data-theme="mirror"] .call-card::before { content: 'VISITOR'; font: 800 13px/1.4 "Cinzel", serif; letter-spacing: .45em; color: #d4af37; }
+[data-theme="mirror"] .overlay[data-kind="incoming"] .call-card::before { content: 'INCOMING'; }
+[data-theme="mirror"] .overlay[data-kind="outgoing"] .call-card::before { content: 'CALLING'; }
+[data-theme="mirror"] .call-kanji {
+  writing-mode: horizontal-tb; height: auto; font-family: var(--font); font-weight: 900; font-size: 64px; line-height: 1.1; letter-spacing: .02em;
+  background: linear-gradient(180deg, #fff3b0 0%, #d4af37 50%, #8a6a1f 100%); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: none;
+}
+[data-theme="mirror"] .call-avatar {
+  width: 150px; height: 150px; margin: 8px 0 4px; border: 0; border-radius: 50%; transform: none;
+  background: radial-gradient(circle, #0b0b0b 0 58px, #d4af37 58px 60px, transparent 61px), conic-gradient(#fff, #8e949c, #f2f4f7, #5c6168, #fff, #a9afb8, #e6e9ed, #6b7078, #fff);
+  color: #f7e08a; font-family: var(--font); font-weight: 900; font-size: 50px;
+}
+[data-theme="mirror"] .call-name { font-weight: 900; }
+[data-theme="mirror"] .call-actions button { border: 1px solid #5a5f66; border-radius: 4px; background: transparent; color: #c9cdd3; }
+[data-theme="mirror"] .call-actions .answer { background: var(--answer); color: var(--answer-text); border: 0; font-family: var(--font); font-weight: 900; font-size: 26px; letter-spacing: .1em; }
+[data-theme="mirror"] .call-actions .decline { border: 0; background: #8b1a1a; color: #fff; font-family: var(--font); font-weight: 900; font-size: 20px; }
+[data-theme="mirror"] .call-actions .callback { border: 0; background: var(--silver-grad); color: #111; }
+/* チャット */
+[data-theme="mirror"] .chat { background: var(--silver-grad); border-left: 2px solid #d4af37; }
+[data-theme="mirror"] .chat-head { border-bottom: 2px solid #d4af37; }
+[data-theme="mirror"] .chat-head b { color: #f7e08a; font-weight: 900; }
+[data-theme="mirror"] .chat-head .ghost { border-color: #5a5f66; background: transparent; }
+[data-theme="mirror"] .chat-row.me .bubble { box-shadow: inset 0 0 0 1px #d4af37; }
+[data-theme="mirror"] .chat-row.them .bubble { border-color: #8e949c; }
+[data-theme="mirror"] .chat-quick, [data-theme="mirror"] .chat-form { border-top-color: #8e949c; }
+[data-theme="mirror"] .quick { border-color: #5a5f66; border-radius: 4px; background: rgba(255,255,255,.5); }
+/* 通話中：上は銀、下は黒 */
+[data-theme="mirror"] .topbar { background: linear-gradient(180deg, #f2f4f7 0%, #a9afb8 48%, #8e949c 52%, #d9dce0 100%); color: #111; }
+[data-theme="mirror"] .tbtn { border: 1px solid #5a5f66; background: rgba(255,255,255,.6); color: #111; font-weight: 900; }
+[data-theme="mirror"] .tbtn.off { color: #8b1a1a; }
+[data-theme="mirror"] .tbtn.danger { border: 0; background: #8b1a1a; color: #fff; }
+[data-theme="mirror"] .stats, [data-theme="mirror"] .q { color: #3a3d42; }
+[data-theme="mirror"] .stats.warn { color: #7a5a12; }
+[data-theme="mirror"] .q select { background: rgba(255,255,255,.7); color: #111; border-color: #5a5f66; }
+[data-theme="mirror"] .topbar .dot.ok { background: #2e6b3e; }
+[data-theme="mirror"] .wipe { border: 4px solid transparent; outline: 0; border-radius: 6px; background: #0a0a0a padding-box, conic-gradient(#fff, #8e949c, #f2f4f7, #5c6168, #fff, #a9afb8, #fff) border-box; box-shadow: 0 6px 24px rgba(0,0,0,.6); }
+[data-theme="mirror"] .wipe-label { color: #1a1200; background: #d4af37; font-family: var(--font); font-weight: 900; font-size: 13px; }
+[data-theme="mirror"] .toolbar { background: #0b0b0b; border-top: 1px solid #3a3d42; }
+[data-theme="mirror"] .tool { border: 1px solid #5a5f66; background: linear-gradient(180deg, #f2f4f7, #c9cdd3); color: #111; font-weight: 900; }
+[data-theme="mirror"] .tool.on, [data-theme="mirror"] #trBtn.on, [data-theme="mirror"] #shareBtn.on { background: var(--gold-grad); border-color: #1a1200; color: #1a1200; }
+[data-theme="mirror"] #openBtn, [data-theme="mirror"] #liveRemoteBtn:not(.on), [data-theme="mirror"] #fullBtn { background: transparent; border-color: #d4af37; color: #f7e08a; }
+[data-theme="mirror"] .grp { border-right-color: #3a3d42; }
+[data-theme="mirror"] .page { color: #c9cdd3; }
+[data-theme="mirror"] .swatch.on { border-color: #fff; box-shadow: 0 0 0 2px #d4af37; }
+[data-theme="mirror"] .tabbar { background: #0b0b0b; border-top: 1px solid #3a3d42; }
+[data-theme="mirror"] .tab { margin: 0; border: 0; }
+[data-theme="mirror"] .tab-main, [data-theme="mirror"] .tab-page, [data-theme="mirror"] .tab-x { color: #8e949c; }
+[data-theme="mirror"] .tab.on { background: transparent; box-shadow: inset 0 -3px 0 #d4af37; }
+[data-theme="mirror"] .tab.on .tab-main { color: #fff; }
+[data-theme="mirror"] .tab-ic { background: #3a3d42; }
+[data-theme="mirror"] .tab.on .tab-ic { background: #d4af37; color: #1a1200; }
+[data-theme="mirror"] .tab-add { border-color: #5a5f66; color: #c9cdd3; }
+/* ダイアログ */
+[data-theme="mirror"] dialog { background: var(--silver-grad); border: 0; border-radius: 6px; box-shadow: 0 0 0 2px #d4af37, 0 24px 50px rgba(0,0,0,.6); }
+[data-theme="mirror"] dialog::backdrop { background: rgba(0,0,0,.65); }
+[data-theme="mirror"] dialog h2 { font-family: var(--font); font-weight: 900; }
+[data-theme="mirror"] fieldset { border-color: #8e949c; }
+[data-theme="mirror"] .minutes-list button { border-color: #5a5f66; }
+[data-theme="mirror"] body.demo .lobby-head h1::after, [data-theme="mirror"] body.demo .topbar .tb-left::before { background: #8b1a1a; color: #fff; font-family: var(--font); font-weight: 900; }
+@media (max-width: 720px) {
+  [data-theme="mirror"] .call-kanji { font-size: 54px; }
+}
+@media (max-height: 640px) {
+  [data-theme="mirror"] .call-kanji { font-size: 40px; }
+  [data-theme="mirror"] .call-avatar { width: 80px; height: 80px; font-size: 28px; margin: 2px 0 0;
+    background: radial-gradient(circle, #0b0b0b 0 29px, #d4af37 29px 31px, transparent 32px), conic-gradient(#fff, #8e949c, #f2f4f7, #5c6168, #fff, #a9afb8, #e6e9ed, #6b7078, #fff); }
+}
+
+/* ===================================================================
+   案35 アメコミ：黄色の網点、太い黒線と影、赤と青
+   =================================================================== */
+[data-theme="comic"] {
+  --bg: #ffd400; --paper: #ffffff; --panel: #ffffff; --panel-2: #ffffff; --line: #111111;
+  --ink: #111111; --ink-2: #222222; --text: #111111; --muted: #333333;
+  --accent: #e5202a; --accent-dark: #c4121b; --accent-text: #ffffff;
+  --ok: #0b8a3a; --ok-light: #4ad66d; --warn: #b35c00; --gold: #ffd400; --bad: #e5202a;
+  --stage: #1c5dd8; --stage-text: #ffffff; --radius: 0;
+  --brush: "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif;
+  --font: "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+  --pop: "Bangers", Impact, "Arial Black", sans-serif;
+  --field: #ffffff;
+  --bar: #1c5dd8; --bar-text: #ffffff; --bar-soft: #dbe6ff; --bar-muted: #c2d4ff; --bar-line: #111111; --bar-line-2: #111111; --bar-2: #ffffff;
+  --tab: #ffffff; --off: #ffd6d8; --off-line: #e5202a;
+  --overlay: rgba(17,17,17,.82);
+  --card: #ffffff; --card-text: #111111; --card-soft: #333333; --card-muted: #555555; --card-line: #111111;
+  --answer: #1c5dd8; --answer-text: #ffffff;
+}
+[data-theme="comic"] body { background-image: radial-gradient(#e8a900 2.2px, transparent 2.6px); background-size: 14px 14px; }
+[data-theme="comic"] button.primary { border: 4px solid #111; background: #e5202a; color: #fff; font-weight: 900; box-shadow: 5px 5px 0 #111; }
+[data-theme="comic"] button.primary:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 #111; }
+[data-theme="comic"] button.ghost { border: 3px solid #111; background: #fff; font-weight: 800; }
+[data-theme="comic"] button.big.primary { font-size: 22px; letter-spacing: .12em; }
+[data-theme="comic"] #guestJoinBtn::after { content: 'ENTER!'; display: block; font: 400 15px/1 var(--pop); letter-spacing: .12em; }
+[data-theme="comic"] input, [data-theme="comic"] select { border: 3px solid #111; font-weight: 700; }
+[data-theme="comic"] .callbtn, [data-theme="comic"] .choices button { font-weight: 900 !important; }
+/* 待受・入室画面 */
+[data-theme="comic"] .lobby-card, [data-theme="comic"] .guest-card { border: 5px solid #111; box-shadow: 8px 8px 0 #111; }
+[data-theme="comic"] .lobby-head h1, [data-theme="comic"] .guest-card h1 { background: none; padding: 0; color: #111; font-family: var(--font); font-weight: 900; font-size: 30px; letter-spacing: .02em; }
+[data-theme="comic"] .lobby-head h1::before, [data-theme="comic"] .guest-card h1::before { content: 'ZUMEN CALL!'; display: block; font: 400 20px/1.2 var(--pop); letter-spacing: .08em; color: #e5202a; }
+[data-theme="comic"] .guest-card h1::before { content: 'ISSUE #1  ·  THE MEETING'; white-space: pre; }
+[data-theme="comic"] .lobby-card h2 { border-bottom: 4px solid #111; font-weight: 900; letter-spacing: .1em; }
+[data-theme="comic"] .me-status { border: 3px solid #111; background: #ffd400; color: #111; }
+[data-theme="comic"] .avatar { border: 3px solid #111; font-weight: 900; }
+[data-theme="comic"] .contact { border-bottom: 3px solid #111; }
+[data-theme="comic"] .lobby-preview { border: 4px solid #111; background-image: radial-gradient(#1648b0 2px, transparent 2.4px); background-size: 10px 10px; }
+[data-theme="comic"] .meet { border: 4px solid #111; box-shadow: 5px 5px 0 #111; }
+[data-theme="comic"] .linkbtn { color: #1c5dd8; font-weight: 800; }
+[data-theme="comic"] .nocam button.ghost { background: #ffd400; border-color: #111; color: #111; }
+/* 着信・発信 */
+[data-theme="comic"] .call-card {
+  border: 5px solid #111; box-shadow: 8px 8px 0 #111; transform: rotate(1deg);
+  background-image: radial-gradient(#ffc2ce 2px, transparent 2.4px); background-size: 12px 12px;
+}
+[data-theme="comic"] .call-card::before { content: 'KNOCK! KNOCK!'; font: 400 30px/1 var(--pop); letter-spacing: .06em; color: #1c5dd8; text-shadow: 2px 2px 0 #111; }
+[data-theme="comic"] .overlay[data-kind="incoming"] .call-card::before { content: 'RING! RING!'; }
+[data-theme="comic"] .overlay[data-kind="outgoing"] .call-card::before { content: 'CALLING...!'; }
+[data-theme="comic"] .call-kanji { writing-mode: horizontal-tb; height: auto; font-family: var(--font); font-weight: 900; font-size: 60px; line-height: 1.05; letter-spacing: 0; color: #e5202a; text-shadow: 3px 3px 0 #111; }
+[data-theme="comic"] .call-avatar {
+  width: 170px; height: 170px; margin: 0; border: 0; border-radius: 50%; transform: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-100 -100 200 200'%3E%3Cline x1='57.9' y1='4.1' x2='97.8' y2='6.9' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='54.4' y1='20.2' x2='91.9' y2='34.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='46.5' y1='34.7' x2='78.5' y2='58.6' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='34.8' y1='46.4' x2='58.8' y2='78.4' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='20.3' y1='54.3' x2='34.4' y2='91.8' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='4.2' y1='57.8' x2='7.1' y2='97.7' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-12.2' y1='56.7' x2='-20.7' y2='95.8' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-27.7' y1='50.9' x2='-46.8' y2='86.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-41.0' y1='41.1' x2='-69.2' y2='69.4' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-50.9' y1='27.9' x2='-85.9' y2='47.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-56.7' y1='12.4' x2='-95.7' y2='21.0' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-57.9' y1='-4.1' x2='-97.8' y2='-6.9' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-54.4' y1='-20.2' x2='-91.9' y2='-34.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-46.5' y1='-34.7' x2='-78.5' y2='-58.6' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-34.8' y1='-46.4' x2='-58.8' y2='-78.4' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-20.3' y1='-54.3' x2='-34.4' y2='-91.8' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='-4.2' y1='-57.8' x2='-7.1' y2='-97.7' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='12.2' y1='-56.7' x2='20.7' y2='-95.8' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='27.7' y1='-50.9' x2='46.8' y2='-86.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='41.0' y1='-41.1' x2='69.2' y2='-69.4' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='50.9' y1='-27.9' x2='85.9' y2='-47.1' stroke='%23111' stroke-width='2.5'/%3E%3Cline x1='56.7' y1='-12.4' x2='95.7' y2='-21.0' stroke='%23111' stroke-width='2.5'/%3E%3Cpolygon points='83.6,-8.4 57.7,5.6 80.4,24.2 51.2,27.2 65.0,53.2 36.9,44.8 39.7,74.0 16.9,55.5 8.4,83.6 -5.6,57.7 -24.2,80.4 -27.2,51.2 -53.2,65.0 -44.8,36.9 -74.0,39.7 -55.5,16.9 -83.6,8.4 -57.7,-5.6 -80.4,-24.2 -51.2,-27.2 -65.0,-53.2 -36.9,-44.8 -39.7,-74.0 -16.9,-55.5 -8.4,-83.6 5.6,-57.7 24.2,-80.4 27.2,-51.2 53.2,-65.0 44.8,-36.9 74.0,-39.7 55.5,-16.9' fill='%23FFD400' stroke='%23111' stroke-width='4' stroke-linejoin='round'/%3E%3Cpolygon points='65.5,7.9 43.3,15.5 55.6,35.5 32.3,32.8 34.7,56.2 14.9,43.5 6.9,65.6 -5.5,45.7 -22.3,62.1 -24.8,38.8 -47.0,46.3 -39.1,24.2 -62.5,21.3 -45.7,4.8 -65.5,-7.9 -43.3,-15.5 -55.6,-35.5 -32.3,-32.8 -34.7,-56.2 -14.9,-43.5 -6.9,-65.6 5.5,-45.7 22.3,-62.1 24.8,-38.8 47.0,-46.3 39.1,-24.2 62.5,-21.3 45.7,-4.8' fill='%23E5202A' stroke='%23111' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle r='38' fill='%23fff' stroke='%23111' stroke-width='5'/%3E%3C/svg%3E") center / contain no-repeat; color: #111; font-family: var(--font); font-weight: 900; font-size: 40px;
+}
+[data-theme="comic"] .overlay[data-kind="incoming"] .call-avatar, [data-theme="comic"] .overlay[data-kind="knock"] .call-avatar { animation: zm-pop 1s ease-in-out infinite; }
+[data-theme="comic"] .call-name { font-weight: 900; }
+[data-theme="comic"] .call-actions button { border: 3px solid #111; background: #fff; box-shadow: 4px 4px 0 #111; }
+[data-theme="comic"] .call-actions .answer { background: var(--answer); color: var(--answer-text); border: 4px solid #111; box-shadow: 5px 5px 0 #111; font-family: var(--font); font-weight: 900; font-size: 24px; letter-spacing: .12em; }
+[data-theme="comic"] .call-actions .decline { border: 4px solid #111; background: #e5202a; color: #fff; font-family: var(--font); font-weight: 900; font-size: 22px; }
+[data-theme="comic"] .decline-link { color: #111; font-weight: 700; }
+/* チャット */
+[data-theme="comic"] .chat { border-left: 5px solid #111; box-shadow: -6px 0 0 rgba(17,17,17,.9); }
+[data-theme="comic"] .chat-head { background: #ffd400; color: #111; border-bottom: 4px solid #111; }
+[data-theme="comic"] .chat-head b { font-family: var(--font); font-weight: 900; }
+[data-theme="comic"] .chat-head .ghost { border-color: #111; color: #111; background: #fff; }
+[data-theme="comic"] .chat-row.me .bubble { border: 3px solid #111; border-radius: 16px 16px 4px 16px; }
+[data-theme="comic"] .chat-row.them .bubble { border: 3px solid #111; border-radius: 16px 16px 16px 4px; }
+[data-theme="comic"] .chat-quick { border-top: 3px solid #111; }
+[data-theme="comic"] .quick { border: 3px solid #111; background: #fff; font-weight: 800; }
+[data-theme="comic"] .chat-form { border-top: 4px solid #111; }
+/* 通話中 */
+[data-theme="comic"] .topbar { background: #ffd400; color: #111; border-bottom: 4px solid #111; }
+[data-theme="comic"] .tbtn { border: 3px solid #111; background: #fff; color: #111; font-weight: 800; }
+[data-theme="comic"] .tbtn.off { color: #c4121b; }
+[data-theme="comic"] .tbtn.danger { border-color: #111; background: #e5202a; color: #fff; }
+[data-theme="comic"] .stats, [data-theme="comic"] .q { color: #111; }
+[data-theme="comic"] .stats.warn { color: #c4121b; }
+[data-theme="comic"] .q select { border: 3px solid #111; color: #111; }
+[data-theme="comic"] .topbar .dot.ok { background: #0b8a3a; }
+[data-theme="comic"] #stage { background-image: radial-gradient(#1648b0 2.4px, transparent 2.8px); background-size: 12px 12px; }
+[data-theme="comic"] .wipe { border: 4px solid #111; outline: 0; box-shadow: 4px 4px 0 #111; }
+[data-theme="comic"] .wipe-label { background: #ffd400; color: #111; font-family: var(--font); font-weight: 800; font-size: 13px; }
+[data-theme="comic"] .toolbar { border-top: 4px solid #111; }
+[data-theme="comic"] .tool { border: 3px solid #111; background: #fff; font-weight: 800; }
+[data-theme="comic"] .tool.on, [data-theme="comic"] #trBtn.on, [data-theme="comic"] #shareBtn.on { border-color: #111; background: #e5202a; color: #fff; }
+[data-theme="comic"] #openBtn, [data-theme="comic"] #liveRemoteBtn:not(.on), [data-theme="comic"] #fullBtn { background: #ffd400; color: #111; }
+[data-theme="comic"] .grp { border-right: 3px solid #111; }
+[data-theme="comic"] .swatch.on { border-color: #111; box-shadow: 0 0 0 2px #ffd400, 0 0 0 4px #111; }
+[data-theme="comic"] .tabbar { border-top: 4px solid #111; }
+[data-theme="comic"] .tab { margin: -4px 6px 0 0; border: 3px solid #111; border-top: 0; }
+[data-theme="comic"] .tab.on { background: #ffd400; box-shadow: inset 0 -4px 0 #111; }
+[data-theme="comic"] .tab.on .tab-main { color: #111; }
+[data-theme="comic"] .tab-ic { background: #111; }
+[data-theme="comic"] .tab.on .tab-ic { background: #e5202a; }
+[data-theme="comic"] .tab-add { border: 3px dashed #111; }
+/* ダイアログ */
+[data-theme="comic"] dialog { border: 5px solid #111; box-shadow: 8px 8px 0 #111; }
+[data-theme="comic"] dialog::backdrop { background: rgba(17,17,17,.55); }
+[data-theme="comic"] dialog h2 { font-family: var(--font); font-weight: 900; }
+[data-theme="comic"] fieldset { border: 3px solid #111; }
+[data-theme="comic"] .minutes-list button { border: 3px solid #111; }
+@keyframes zm-pop { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.07) rotate(-4deg); } }
+@media (prefers-reduced-motion: reduce) { [data-theme="comic"] .call-avatar { animation: none !important; } }
+@media (max-width: 720px) {
+  [data-theme="comic"] .call-kanji { font-size: 50px; }
+  [data-theme="comic"] .call-avatar { width: 140px; height: 140px; font-size: 34px; }
+}
+@media (max-height: 640px) {
+  [data-theme="comic"] .call-card::before { font-size: 20px; }
+  [data-theme="comic"] .call-kanji { font-size: 38px; }
+  [data-theme="comic"] .call-avatar { width: 84px; height: 84px; font-size: 22px; }
+}
+
+/* ===================================================================
+   案41 カレッジ・バーシティ：えんじ・クリーム・金の校章
+   =================================================================== */
+[data-theme="varsity"] {
+  --bg: #4a0d1a; --paper: #f2e6c9; --panel: #f2e6c9; --panel-2: #ebddba; --line: #c9b48a;
+  --ink: #4a0d1a; --ink-2: #5a1222; --text: #4a0d1a; --muted: #6b4a3a;
+  --accent: #6b1428; --accent-dark: #6b1428; --accent-text: #f2e6c9;
+  --ok: #2e6b3e; --ok-light: #8fd19e; --warn: #8a5a00; --gold: #c99b2e; --bad: #a3122e;
+  --stage: #4a0d1a; --stage-text: #f2e6c9; --radius: 12px;
+  --brush: "Kaisei Tokumin", "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", serif;
+  --font: "M PLUS 1p", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --college: "Graduate", "Rockwell", Georgia, serif;
+  --field: #ffffff;
+  --bar: #6b1428; --bar-text: #f2e6c9; --bar-soft: #ebd9b0; --bar-muted: #d9c08a; --bar-line: #c99b2e; --bar-line-2: #c99b2e; --bar-2: #4a0d1a;
+  --tab: #f2e6c9; --off: #2a060e; --off-line: #c99b2e;
+  --overlay: rgba(42,6,14,.88);
+  --card: #6b1428; --card-text: #f2e6c9; --card-soft: #ebd9b0; --card-muted: #d9c08a; --card-line: #f2e6c9;
+  --answer: #f2e6c9; --answer-text: #6b1428;
+}
+[data-theme="varsity"] body { background: linear-gradient(180deg, #f2e6c9 0 7px, #4a0d1a 7px 12px, #c99b2e 12px 17px, #4a0d1a 17px); }
+[data-theme="varsity"] #lobby, [data-theme="varsity"] #guest { padding-top: 34px; }
+[data-theme="varsity"] button.primary { border: 4px solid #c99b2e; border-radius: 14px; background: #6b1428; color: #f2e6c9; box-shadow: 0 0 0 3px #6b1428; }
+[data-theme="varsity"] button.primary:active { transform: translateY(1px); box-shadow: 0 0 0 2px #6b1428; }
+[data-theme="varsity"] button.ghost { border: 2px solid #6b1428; border-radius: 10px; color: #6b1428; }
+[data-theme="varsity"] button.big.primary { font-family: var(--brush); font-weight: 800; letter-spacing: .2em; }
+[data-theme="varsity"] #guestJoinBtn::after { content: 'GAME ON'; display: block; font: 400 11px/1.2 var(--college); letter-spacing: .35em; }
+[data-theme="varsity"] input, [data-theme="varsity"] select { border: 3px solid #4a0d1a; border-radius: 10px; }
+[data-theme="varsity"] .callbtn, [data-theme="varsity"] .choices button { font-weight: 800 !important; }
+/* 待受・入室画面 */
+[data-theme="varsity"] .lobby-card, [data-theme="varsity"] .guest-card { border: 6px solid #6b1428; border-radius: 16px; box-shadow: 0 0 0 4px #f2e6c9, 0 0 0 7px #c99b2e; }
+[data-theme="varsity"] .lobby-head h1, [data-theme="varsity"] .guest-card h1 { background: none; padding: 0; color: #4a0d1a; font-family: var(--brush); font-weight: 800; font-size: 30px; letter-spacing: .04em; }
+[data-theme="varsity"] .lobby-head h1::before, [data-theme="varsity"] .guest-card h1::before { content: 'EST. 2026  ·  ZUMEN-CALL'; display: block; white-space: pre; font: 400 12px/1.6 var(--college); letter-spacing: .08em; color: #6b1428; }
+[data-theme="varsity"] .guest-card h1::before { content: 'EST. 2026  ·  VARSITY MEETING'; }
+[data-theme="varsity"] .lobby-card h2 { color: #6b1428; border-bottom: 3px solid #c99b2e; font-family: var(--brush); font-weight: 800; letter-spacing: .2em; }
+[data-theme="varsity"] .me-status { border: 2px solid #c99b2e; border-radius: 999px; color: #6b1428; background: #fff8e6; }
+[data-theme="varsity"] .avatar { border: 3px solid #f2e6c9; box-shadow: 0 0 0 3px #c99b2e; font-weight: 800; }
+[data-theme="varsity"] .contact { border-bottom: 2px solid #d9c08a; }
+[data-theme="varsity"] .lobby-preview { border: 3px solid #c99b2e; border-radius: 12px; background: #4a0d1a; }
+[data-theme="varsity"] .meet { border: 3px solid #6b1428; border-radius: 14px; background: #fff8e6; }
+[data-theme="varsity"] .nocam button.ghost { border-color: #c99b2e; color: #f2e6c9; }
+[data-theme="varsity"] body.demo .lobby-head h1::after, [data-theme="varsity"] body.demo .topbar .tb-left::before { background: #c99b2e; color: #4a0d1a; }
+/* 着信・発信 */
+[data-theme="varsity"] .call-card { border: 6px solid #f2e6c9; border-radius: 16px; box-shadow: 0 0 0 4px #c99b2e, 0 20px 60px rgba(0,0,0,.5); }
+[data-theme="varsity"] .call-card::before { content: 'HOME TEAM WELCOMES'; font: 400 14px/1.4 var(--college); letter-spacing: .08em; color: #f2c14e; }
+[data-theme="varsity"] .overlay[data-kind="incoming"] .call-card::before { content: 'INCOMING CALL'; }
+[data-theme="varsity"] .overlay[data-kind="outgoing"] .call-card::before { content: 'NOW CALLING'; }
+[data-theme="varsity"] .call-kanji {
+  writing-mode: horizontal-tb; height: auto; font-family: var(--brush); font-weight: 800; font-size: 60px; line-height: 1.1; letter-spacing: 0; color: #f2e6c9;
+  text-shadow: 3px 0 #c99b2e, -3px 0 #c99b2e, 0 3px #c99b2e, 0 -3px #c99b2e, 2px 2px #c99b2e, -2px -2px #c99b2e, 2px -2px #c99b2e, -2px 2px #c99b2e, 6px 6px 0 #2a060e;
+}
+[data-theme="varsity"] .call-avatar {
+  width: 170px; height: 170px; margin: 6px 0 2px; border: 0; border-radius: 50%; transform: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-100 -100 200 200'%3E%3Cdefs%3E%3Cpath id='t' d='M-72 0 A72 72 0 0 1 72 0'/%3E%3Cpath id='b' d='M-74 0 A74 74 0 0 0 74 0'/%3E%3C/defs%3E%3Ccircle r='97' fill='%23F2E6C9' stroke='%23C99B2E' stroke-width='5'/%3E%3Ccircle r='88' fill='none' stroke='%236B1428' stroke-width='2'/%3E%3Ccircle r='62' fill='none' stroke='%236B1428' stroke-width='1.2' stroke-dasharray='2 3'/%3E%3Ctext font-family='Georgia,serif' font-weight='700' font-size='17' letter-spacing='3' fill='%236B1428' text-anchor='middle'%3E%3CtextPath href='%23t' startOffset='50%25'%3EZUMEN-MEET%3C/textPath%3E%3C/text%3E%3Ctext font-family='Georgia,serif' font-weight='700' font-size='15' letter-spacing='3' fill='%236B1428' text-anchor='middle' dominant-baseline='hanging'%3E%3CtextPath href='%23b' startOffset='50%25'%3EVARSITY CLUB%3C/textPath%3E%3C/text%3E%3Cpolygon points='0.0,-9.0 2.4,-3.2 8.6,-2.8 3.8,1.2 5.3,7.3 0.0,4.0 -5.3,7.3 -3.8,1.2 -8.6,-2.8 -2.4,-3.2' transform='translate(-76 4)' fill='%23C99B2E'/%3E%3Cpolygon points='0.0,-9.0 2.4,-3.2 8.6,-2.8 3.8,1.2 5.3,7.3 0.0,4.0 -5.3,7.3 -3.8,1.2 -8.6,-2.8 -2.4,-3.2' transform='translate(76 4)' fill='%23C99B2E'/%3E%3Ccircle r='54' fill='%23C99B2E'/%3E%3Ccircle r='50' fill='%236B1428' stroke='%23F2E6C9' stroke-width='4'/%3E%3C/svg%3E") center / contain no-repeat; color: #f2e6c9; font-family: var(--brush); font-weight: 800; font-size: 38px;
+}
+[data-theme="varsity"] .call-name { font-family: var(--brush); font-weight: 800; }
+[data-theme="varsity"] .call-actions button { border: 2px solid #c99b2e; border-radius: 12px; background: transparent; }
+[data-theme="varsity"] .call-actions .answer { background: var(--answer); color: var(--answer-text); border: 4px solid #c99b2e; border-radius: 14px; font-weight: 800; font-size: 24px; letter-spacing: .12em; }
+[data-theme="varsity"] .call-actions .decline { border: 4px solid #f2e6c9; background: #a3122e; color: #fff; font-weight: 800; font-size: 22px; }
+/* チャット */
+[data-theme="varsity"] .chat { border-left: 4px solid #c99b2e; }
+[data-theme="varsity"] .chat-head { border-bottom: 4px solid #c99b2e; }
+[data-theme="varsity"] .chat-head b { font-weight: 800; }
+[data-theme="varsity"] .chat-row.me .bubble { border-radius: 14px 14px 4px 14px; }
+[data-theme="varsity"] .chat-row.them .bubble { border: 2px solid #c99b2e; border-radius: 14px 14px 14px 4px; }
+[data-theme="varsity"] .quick { border: 2px solid #6b1428; border-radius: 999px; }
+[data-theme="varsity"] .chat-form { border-top: 3px solid #6b1428; }
+/* 通話中 */
+[data-theme="varsity"] .topbar { border-bottom: 4px solid #c99b2e; }
+[data-theme="varsity"] .tbtn { border: 2px solid #c99b2e; border-radius: 10px; font-weight: 800; }
+[data-theme="varsity"] .tbtn.danger { border-color: #f2e6c9; background: #f2c14e; color: #4a0d1a; }
+[data-theme="varsity"] .q select { border-radius: 10px; }
+[data-theme="varsity"] .wipe { border: 4px solid #c99b2e; outline: 0; border-radius: 12px; }
+[data-theme="varsity"] .wipe-label { background: #6b1428; color: #f2e6c9; font-family: var(--font); font-weight: 800; font-size: 13px; }
+[data-theme="varsity"] .toolbar { border-top: 3px solid #6b1428; }
+[data-theme="varsity"] .tool { border: 2px solid #6b1428; border-radius: 10px; background: #fff; font-weight: 800; }
+[data-theme="varsity"] .tool.on, [data-theme="varsity"] #trBtn.on, [data-theme="varsity"] #shareBtn.on { border-color: #c99b2e; background: #6b1428; color: #f2e6c9; box-shadow: 0 0 0 2px #6b1428; }
+[data-theme="varsity"] #openBtn, [data-theme="varsity"] #liveRemoteBtn:not(.on), [data-theme="varsity"] #fullBtn { border-color: #6b1428; background: #c99b2e; color: #4a0d1a; }
+[data-theme="varsity"] .grp { border-right-color: #d9c08a; }
+[data-theme="varsity"] .swatch.on { border-color: #6b1428; box-shadow: 0 0 0 2px #c99b2e; }
+[data-theme="varsity"] .tabbar { border-top: 3px solid #6b1428; }
+[data-theme="varsity"] .tab { margin: -3px 4px 0 0; border: 2px solid #6b1428; border-top: 0; border-radius: 0 0 10px 10px; }
+[data-theme="varsity"] .tab.on { background: #fff; box-shadow: inset 0 -4px 0 #c99b2e; }
+[data-theme="varsity"] .tab.on .tab-ic { background: #c99b2e; color: #4a0d1a; }
+[data-theme="varsity"] .tab-add { border: 2px dashed #6b1428; border-radius: 10px; }
+/* ダイアログ */
+[data-theme="varsity"] dialog { border: 6px solid #6b1428; border-radius: 16px; box-shadow: 0 0 0 4px #f2e6c9, 0 0 0 7px #c99b2e, 0 20px 50px rgba(0,0,0,.5); }
+[data-theme="varsity"] dialog h2 { font-weight: 800; }
+[data-theme="varsity"] fieldset { border: 2px solid #d9c08a; border-radius: 10px; }
+[data-theme="varsity"] .minutes-list button { border: 2px solid #6b1428; border-radius: 10px; }
+@media (max-width: 720px) {
+  [data-theme="varsity"] .call-kanji { font-size: 50px; }
+  [data-theme="varsity"] .call-avatar { width: 150px; height: 150px; font-size: 34px; }
+}
+@media (max-height: 640px) {
+  [data-theme="varsity"] .call-kanji { font-size: 38px; }
+  [data-theme="varsity"] .call-avatar { width: 88px; height: 88px; font-size: 20px; margin: 0; }
+}
+
+/* ===================================================================
+   案42 狙撃：暗い照準器の画面。入室・着信のボタンは撃ち抜ける（通話中の画面はふつうのボタン）
+   =================================================================== */
+[data-theme="sniper"] {
+  --bg: #0a0d0b; --paper: #121613; --panel: #121613; --panel-2: #070908; --line: #2f3a33;
+  --ink: #4a5a4f; --ink-2: #1a221d; --text: #e2e8e3; --muted: #9aa69d;
+  --accent: #ff2a2a; --accent-dark: #ff6a6a; --accent-text: #ffffff;
+  --ok: #7ce38b; --ok-light: #7ce38b; --warn: #ffc857; --gold: #ffc857; --bad: #ff2a2a;
+  --stage: #070908; --stage-text: #9aa69d; --radius: 0;
+  --brush: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --font: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --mono: "Share Tech Mono", ui-monospace, Menlo, Consolas, monospace;
+  --stencil: "Black Ops One", Impact, "Arial Black", sans-serif;
+  --field: #070908;
+  --bar: #070908; --bar-text: #e2e8e3; --bar-soft: #9aa69d; --bar-muted: #7ce38b; --bar-line: #4a5a4f; --bar-line-2: #2f3a33; --bar-2: #121613;
+  --tab: transparent; --off: #3a0c0c; --off-line: #ff2a2a;
+  --overlay: rgba(5,7,6,.9);
+  --card: #121613; --card-text: #e2e8e3; --card-soft: #9aa69d; --card-muted: #6f7c73; --card-line: #2f3a33;
+  --answer: #7ce38b; --answer-text: #07120a;
+  /* 四隅の赤い照準の枠 */
+  --corners: linear-gradient(#ff2a2a, #ff2a2a) left 8px top 8px / 16px 2px no-repeat, linear-gradient(#ff2a2a, #ff2a2a) left 8px top 8px / 2px 16px no-repeat,
+    linear-gradient(#ff2a2a, #ff2a2a) right 8px top 8px / 16px 2px no-repeat, linear-gradient(#ff2a2a, #ff2a2a) right 8px top 8px / 2px 16px no-repeat,
+    linear-gradient(#ff2a2a, #ff2a2a) left 8px bottom 8px / 16px 2px no-repeat, linear-gradient(#ff2a2a, #ff2a2a) left 8px bottom 8px / 2px 16px no-repeat,
+    linear-gradient(#ff2a2a, #ff2a2a) right 8px bottom 8px / 16px 2px no-repeat, linear-gradient(#ff2a2a, #ff2a2a) right 8px bottom 8px / 2px 16px no-repeat;
+  color-scheme: dark;
+}
+[data-theme="sniper"] body { background-image: linear-gradient(rgba(124,227,139,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(124,227,139,.04) 1px, transparent 1px); background-size: 40px 40px; }
+[data-theme="sniper"] button.primary { border: 0; background: #ff2a2a; color: #fff; font-weight: 900; box-shadow: 0 0 0 1px #ff7a7a inset, 0 0 26px rgba(255,42,42,.45); }
+[data-theme="sniper"] button.primary:active { transform: translateY(1px); }
+[data-theme="sniper"] button.ghost { border: 1px solid #4a5a4f; }
+[data-theme="sniper"] button.big.primary { letter-spacing: .25em; font-size: 20px; }
+[data-theme="sniper"] #guestJoinBtn::after { content: 'FIRE'; display: block; font: 400 13px/1.2 var(--stencil); letter-spacing: .4em; }
+[data-theme="sniper"] input, [data-theme="sniper"] select { border: 1px solid #4a5a4f; color: #fff; }
+[data-theme="sniper"] .callbtn, [data-theme="sniper"] .choices button { font-weight: 900 !important; }
+/* 待受・入室画面 */
+[data-theme="sniper"] .lobby-card, [data-theme="sniper"] .guest-card { background: var(--corners), #121613; border: 1px solid #2f3a33; box-shadow: 0 0 0 1px #050706, 0 18px 40px rgba(0,0,0,.5); }
+[data-theme="sniper"] .lobby-head h1, [data-theme="sniper"] .guest-card h1 { background: none; padding: 0; color: #fff; font-family: var(--font); font-weight: 900; font-size: 30px; letter-spacing: .04em; }
+[data-theme="sniper"] .lobby-head h1::before, [data-theme="sniper"] .guest-card h1::before { content: '◎ ZUMEN-CALL // 狙撃'; display: block; margin-bottom: 2px; font: 400 13px/1.6 var(--mono); letter-spacing: .12em; color: #ff2a2a; }
+[data-theme="sniper"] .guest-card h1::before { content: '◎ SNIPER MEETING // 狙撃'; }
+[data-theme="sniper"] .lobby-card h2 { color: #9aa69d; border-bottom: 1px solid #ff2a2a; font-weight: 900; letter-spacing: .2em; }
+[data-theme="sniper"] .guest-host { color: #9aa69d; }
+[data-theme="sniper"] .me-status { border: 1px solid #7ce38b; color: #7ce38b; }
+[data-theme="sniper"] .avatar { background: #1a221d; border: 2px solid #ff2a2a; color: #fff; font-weight: 900; }
+[data-theme="sniper"] .lobby-preview { border: 1px solid #2f3a33; }
+[data-theme="sniper"] .meet { background: #0c100d; border: 1px solid #2f3a33; }
+[data-theme="sniper"] .page, [data-theme="sniper"] .stats { font-family: var(--mono); }
+/* 着信・発信 */
+[data-theme="sniper"] .call-card { background: var(--corners), #121613; border: 1px solid #2f3a33; box-shadow: 0 0 0 1px #050706, 0 18px 40px rgba(0,0,0,.5); }
+[data-theme="sniper"] .call-card::before { content: 'TARGET ACQUIRED'; font: 400 18px/1.3 var(--stencil); letter-spacing: .12em; color: #ff2a2a; }
+[data-theme="sniper"] .overlay[data-kind="outgoing"] .call-card::before { content: 'STAND BY...'; }
+[data-theme="sniper"] .call-kanji { writing-mode: horizontal-tb; height: auto; font-family: var(--font); font-weight: 900; font-size: 62px; line-height: 1.05; letter-spacing: 0; color: #fff; text-shadow: 3px 0 0 #ff2a2a; }
+[data-theme="sniper"] .call-avatar {
+  width: 170px; height: 170px; margin: 6px 0 2px; border: 0; border-radius: 50%; transform: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-100 -100 200 200'%3E%3Ccircle r='97' fill='%23070908' stroke='%232F3A33' stroke-width='3'/%3E%3Ccircle r='90' fill='none' stroke='%23E2E8E3' stroke-width='2'/%3E%3Cline x1='62.0' y1='0.0' x2='90.0' y2='0.0' stroke='%23E2E8E3' stroke-width='2.5'/%3E%3Cline x1='70.0' y1='4.0' x2='70.0' y2='-4.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Cline x1='78.0' y1='4.0' x2='78.0' y2='-4.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Crect x='86.0' y='-4.0' width='8' height='8' fill='%23E2E8E3'/%3E%3Cline x1='0.0' y1='62.0' x2='0.0' y2='90.0' stroke='%23E2E8E3' stroke-width='2.5'/%3E%3Cline x1='-4.0' y1='70.0' x2='4.0' y2='70.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Cline x1='-4.0' y1='78.0' x2='4.0' y2='78.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Crect x='-4.0' y='86.0' width='8' height='8' fill='%23E2E8E3'/%3E%3Cline x1='-62.0' y1='0.0' x2='-90.0' y2='0.0' stroke='%23E2E8E3' stroke-width='2.5'/%3E%3Cline x1='-70.0' y1='-4.0' x2='-70.0' y2='4.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Cline x1='-78.0' y1='-4.0' x2='-78.0' y2='4.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Crect x='-94.0' y='-4.0' width='8' height='8' fill='%23E2E8E3'/%3E%3Cline x1='-0.0' y1='-62.0' x2='-0.0' y2='-90.0' stroke='%23E2E8E3' stroke-width='2.5'/%3E%3Cline x1='4.0' y1='-70.0' x2='-4.0' y2='-70.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Cline x1='4.0' y1='-78.0' x2='-4.0' y2='-78.0' stroke='%23E2E8E3' stroke-width='2'/%3E%3Crect x='-4.0' y='-94.0' width='8' height='8' fill='%23E2E8E3'/%3E%3Ccircle r='58' fill='none' stroke='%23FF2A2A' stroke-width='2' stroke-dasharray='5 5'/%3E%3Ccircle r='44' fill='%231A221D' stroke='%23FF2A2A' stroke-width='3'/%3E%3Ctext x='-64' y='-52' font-family='monospace' font-size='10' fill='%237CE38B'%3EWIND 3.2%3C/text%3E%3Ctext x='34' y='-52' font-family='monospace' font-size='10' fill='%237CE38B'%3E1,250m%3C/text%3E%3Ctext x='-66' y='62' font-family='monospace' font-size='10' fill='%237CE38B'%3E%26%23177;0.01mm%3C/text%3E%3C/svg%3E") center / contain no-repeat; color: #fff; font-family: var(--font); font-weight: 900; font-size: 40px;
+}
+[data-theme="sniper"] .call-name { font-weight: 900; color: #fff; }
+[data-theme="sniper"] .call-actions button { border: 1px solid #4a5a4f; background: transparent; }
+[data-theme="sniper"] .call-actions .answer { background: var(--answer); color: var(--answer-text); border: 0; font-family: var(--font); font-weight: 900; font-size: 24px; letter-spacing: .12em; }
+[data-theme="sniper"] .call-actions .decline { border: 0; background: #ff2a2a; color: #fff; font-family: var(--font); font-weight: 900; font-size: 22px; }
+/* チャット */
+[data-theme="sniper"] .chat { border-left: 1px solid #ff2a2a; }
+[data-theme="sniper"] .chat-head { border-bottom: 1px solid #ff2a2a; }
+[data-theme="sniper"] .chat-row.me .bubble { background: #1a221d; border: 1px solid #7ce38b; }
+[data-theme="sniper"] .chat-row.them .bubble { border-color: #4a5a4f; }
+[data-theme="sniper"] .quick { border-color: #4a5a4f; }
+[data-theme="sniper"] .chat-form { border-top: 1px solid #2f3a33; }
+/* 通話中（ボタンはふつうのまま） */
+[data-theme="sniper"] .topbar { border-bottom: 1px solid #ff2a2a; }
+[data-theme="sniper"] .tbtn.danger { border-color: #ff2a2a; }
+[data-theme="sniper"] .wipe { border: 1px solid #7ce38b; outline: 0; }
+[data-theme="sniper"] .wipe-label { font-family: var(--font); font-weight: 800; font-size: 13px; }
+[data-theme="sniper"] .toolbar { background: #070908; border-top: 1px solid #2f3a33; }
+[data-theme="sniper"] .tool { border: 1px solid #4a5a4f; font-weight: 800; }
+[data-theme="sniper"] .tool.on, [data-theme="sniper"] #trBtn.on, [data-theme="sniper"] #shareBtn.on { border-color: #ff2a2a; background: #ff2a2a; color: #fff; }
+[data-theme="sniper"] #openBtn, [data-theme="sniper"] #liveRemoteBtn:not(.on), [data-theme="sniper"] #fullBtn { border-color: #c9d3cb; background: #e2e8e3; color: #0a0d0b; }
+[data-theme="sniper"] .grp { border-right-color: #2f3a33; }
+[data-theme="sniper"] .swatch.on { border-color: #fff; box-shadow: 0 0 0 2px #ff2a2a; }
+[data-theme="sniper"] .tabbar { background: #070908; border-top: 1px solid #2f3a33; }
+[data-theme="sniper"] .tab { margin: 0; border: 0; }
+[data-theme="sniper"] .tab-main, [data-theme="sniper"] .tab-page, [data-theme="sniper"] .tab-x { color: #6f7c73; }
+[data-theme="sniper"] .tab.on { background: transparent; box-shadow: inset 0 -3px 0 #ff2a2a; }
+[data-theme="sniper"] .tab.on .tab-main { color: #fff; }
+[data-theme="sniper"] .tab-ic { background: #26302a; }
+[data-theme="sniper"] .tab.on .tab-ic { background: #ff2a2a; color: #fff; }
+[data-theme="sniper"] .tab-add { border: 1px dashed #4a5a4f; color: #9aa69d; }
+/* ダイアログ */
+[data-theme="sniper"] dialog { background: var(--corners), #121613; border: 1px solid #2f3a33; box-shadow: 0 18px 40px rgba(0,0,0,.6); }
+[data-theme="sniper"] dialog h2 { font-family: var(--font); font-weight: 900; }
+[data-theme="sniper"] fieldset { border-color: #2f3a33; }
+[data-theme="sniper"] .minutes-list button { border-color: #4a5a4f; }
+@media (max-width: 720px) {
+  [data-theme="sniper"] .call-kanji { font-size: 52px; }
+  [data-theme="sniper"] .call-avatar { width: 150px; height: 150px; font-size: 36px; }
+}
+@media (max-height: 640px) {
+  [data-theme="sniper"] .call-card::before { font-size: 14px; }
+  [data-theme="sniper"] .call-kanji { font-size: 40px; }
+  [data-theme="sniper"] .call-avatar { width: 88px; height: 88px; font-size: 22px; margin: 0; }
+}
+
+/* ---- 撃ち抜けるボタン（入室する・入室を許可・お断りする・出る など） ---- */
+.snipe { position: relative; }
+[data-theme="sniper"] .snipe { cursor: crosshair; }
+@media (hover: hover) {
+  [data-theme="sniper"] .snipe:hover::before {
+    content: ""; position: absolute; left: 50%; top: 50%; z-index: 2; width: 8px; height: 8px; margin: -4px 0 0 -4px;
+    border-radius: 50%; background: #ff2a2a; box-shadow: 0 0 10px 3px rgba(255,42,42,.8); pointer-events: none;
+  }
+}
+/* 照準が合う → 発射の光 → ガラスのひび（弾痕は残る） */
+.shot { position: absolute; width: 0; height: 0; pointer-events: none; z-index: 30; }
+.shot .scope { position: absolute; left: -46px; top: -46px; width: 92px; height: 92px; box-sizing: border-box; border: 2px solid #ff2a2a; border-radius: 50%; opacity: 0; animation: zm-scope .42s ease-out forwards; }
+.shot .scope::before { content: ""; position: absolute; left: 50%; top: -10px; bottom: -10px; width: 2px; margin-left: -1px; background: #ff2a2a; }
+.shot .scope::after { content: ""; position: absolute; top: 50%; left: -10px; right: -10px; height: 2px; margin-top: -1px; background: #ff2a2a; }
+.shot .flash { position: absolute; left: -30px; top: -30px; width: 60px; height: 60px; border-radius: 50%; background: radial-gradient(circle, #fff 0, #fff3d6 25%, rgba(255,200,140,.5) 50%, transparent 70%); opacity: 0; animation: zm-flash .18s ease-out .38s forwards; }
+.shot .ring { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; box-sizing: border-box; border: 1px solid rgba(255,255,255,.7); border-radius: 50%; opacity: 0; animation: zm-ring .35s ease-out .4s forwards; }
+.shot .gw { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.shot .glass { position: absolute; left: -60px; top: -60px; overflow: visible; opacity: 0; transform: scale(.7); animation: zm-glass .07s ease-out .4s forwards; }
+@keyframes zm-scope { 0% { transform: scale(2.8) rotate(-30deg); opacity: 0; } 55% { transform: scale(1) rotate(0); opacity: 1; } 88% { opacity: 1; } 100% { transform: scale(.85); opacity: 0; } }
+@keyframes zm-flash { 0% { opacity: 1; transform: scale(.5); } 100% { opacity: 0; transform: scale(1.3); } }
+@keyframes zm-ring { 0% { opacity: .9; transform: scale(.4); } 100% { opacity: 0; transform: scale(2.4); } }
+@keyframes zm-glass { to { opacity: 1; transform: none; } }
+/* 飛び散るガラスの破片 */
+.fx-chips { position: fixed; inset: 0; z-index: 200; pointer-events: none; overflow: hidden; }
+.fx-chips .shard { position: absolute; width: 0; height: 0; opacity: 0; animation: zm-shard .8s cubic-bezier(.25,.6,.45,1) .4s forwards; }
+.fx-chips .shard svg { position: absolute; transform: translate(-50%, -50%); }
+@keyframes zm-shard { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)); } }
+/* 撃たれた札が軽く揺れる */
+.shake { animation: zm-shake .45s linear; }
+@keyframes zm-shake { 0%, 100% { translate: 0 0; } 12% { translate: -6px 4px; } 28% { translate: 5px -4px; } 45% { translate: -3px 2px; } 65% { translate: 2px -1px; } }
+@media (prefers-reduced-motion: reduce) {
+  .shot * { animation-duration: .01s !important; animation-delay: 0s !important; }
+  .shake { animation: none; }
+}
+
+/* ---- 設定：画面のデザインの一覧 ---- */
+.theme-list { display: flex; flex-direction: column; gap: 6px; }
+.theme-opt { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 10px; border: 1px solid var(--line); cursor: pointer; }
+.theme-opt input { width: 20px; height: 20px; min-height: 0; flex: none; accent-color: var(--accent); }
+.theme-opt:has(input:checked) { border: 2px solid var(--accent); padding: 5px 9px; }
+.theme-sw { display: inline-flex; flex: none; border: 1px solid rgba(128,128,128,.6); }
+.theme-sw i { width: 16px; height: 26px; }
+.theme-name { display: flex; flex-direction: column; line-height: 1.3; }
+.theme-name small { color: var(--muted); font-size: 12px; }
+.sniper-opts { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px dashed var(--line); }
+.sniper-opts .row { margin: 0; align-items: center; }
+#fxTestBtn { min-height: 56px; font-size: 18px; }

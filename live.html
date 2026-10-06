@@ -9,6 +9,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Yuji+Syuku&amp;family=Shippori+Mincho:wght@500;700;800&amp;display=swap">
 <link rel="stylesheet" href="style.css">
+<!-- 画面のデザイン（設定で選ぶ）。表示の前にデザインを決めるので、ここで読み込む -->
+<link rel="stylesheet" href="themes.css">
+<script src="theme.js"></script>
 </head>
 <body>
 
@@ -22,7 +25,7 @@
         <button id="changeMeBtn" class="linkbtn" type="button">変更</button>
         <span class="me-status"><span id="meDot" class="dot"></span> <span id="meStatus">準備中</span></span>
       </div>
-      <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button><button id="historyBtn" class="ghost small" type="button">議事録の履歴</button></div>
+      <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button><button id="themeBtn" class="ghost small" type="button">画面のデザイン</button><button id="historyBtn" class="ghost small" type="button">議事録の履歴</button></div>
     </header>
 
     <!-- 社外の方との打ち合わせ（招待リンク） -->
@@ -103,7 +106,7 @@
       <form id="guestForm" class="guest-form" novalidate>
         <label class="field"><span>お名前（必須）</span><input id="guestName" maxlength="30" autocomplete="name" placeholder="例：佐藤"></label>
         <label class="field"><span>会社名</span><input id="guestCompany" maxlength="40" autocomplete="organization" placeholder="例：△△工業"></label>
-        <button id="guestJoinBtn" class="primary big" type="submit">入室する</button>
+        <button id="guestJoinBtn" class="primary big snipe" type="submit">入室する</button>
         <button id="guestCancelBtn" class="ghost big" type="button" hidden>申し込みをやめる</button>
         <p id="guestMsg" class="msg" role="status" aria-live="polite"></p>
       </form>
@@ -131,11 +134,11 @@
     <div id="callName" class="call-name"></div>
     <div id="callStatus" class="call-status"></div>
     <div class="call-actions">
-      <button id="answerBtn" class="answer" type="button">出る</button>
-      <button id="callbackBtn" class="callback" type="button"><span>出られない</span><small>折り返します</small></button>
+      <button id="answerBtn" class="answer snipe" type="button">出る</button>
+      <button id="callbackBtn" class="callback snipe" type="button"><span>出られない</span><small>折り返します</small></button>
       <button id="cancelBtn" class="decline" type="button">取り消す</button>
     </div>
-    <button id="declineBtn" class="decline-link" type="button">何も伝えずに拒否</button>
+    <button id="declineBtn" class="decline-link snipe" type="button">何も伝えずに拒否</button>
     <p class="call-keys">キーボード：Enter＝出る　Esc＝折り返します</p>
   </div>
 </div>
@@ -278,6 +281,21 @@
   </form>
 </dialog>
 
+<!-- ===== 画面のデザイン ===== -->
+<dialog id="themeDlg">
+  <form method="dialog">
+    <h2>画面のデザイン（このPCだけの設定）</h2>
+    <p class="hint">選ぶとすぐに切り替わります。社外の方（招待リンクから入室する方）の画面も、ここで選んだデザインで表示されます。</p>
+    <div id="themeList" class="theme-list" role="radiogroup" aria-label="画面のデザイン"></div>
+    <div id="sniperOpts" class="sniper-opts" hidden>
+      <label class="check"><input type="checkbox" id="fxSoundChk"> 撃ったときの効果音（ズドーン）を鳴らす</label>
+      <button id="fxTestBtn" class="primary snipe" type="button">試し撃ち</button>
+      <p class="hint">「入室する」「入室を許可」「お断りする」「出る」などを押すと、撃ち抜かれたように割れます。効果音は押した側の端末だけで鳴り、相手には聞こえません。打ち合わせ中の画面のボタンは、ふつうのボタンのままです。</p>
+    </div>
+    <div class="row end"><button class="primary" value="ok">閉じる</button></div>
+  </form>
+</dialog>
+
 <!-- ===== 議事録 ===== -->
 <dialog id="minutesDlg" class="minutes">
   <form method="dialog">
@@ -319,6 +337,7 @@
     <label class="field"><span>カメラ</span><select id="setCam"></select></label>
     <label class="field"><span>マイク</span><select id="setMic"></select></label>
     <label class="check"><input type="checkbox" id="mirrorChk" checked> 自分のワイプを鏡のように反転表示</label>
+    <label class="field guest-hide"><span>画面のデザイン</span><select id="setTheme"></select></label>
     <div class="row end"><button class="primary" value="ok">閉じる</button></div>
   </form>
 </dialog>
