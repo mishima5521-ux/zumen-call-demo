@@ -1655,6 +1655,47 @@ function saveMinutes(inp, text) {
   if (i >= 0) list[i] = item; else list.unshift(item);
   store.set('minutes', list.slice(0, 30));
 }
+// ---- 無料の AI に貼り付けて議事録を作る ----
+//   Gemini・ChatGPT・Claude・Copilot から選ぶ。API キーも費用も要らない。指示と記録をコピーし、選んだ AI の画面を開くので、貼り付けて送るだけ
+const AI_SITES = {
+  gemini: { name: 'Gemini', url: 'https://gemini.google.com/app' },
+  chatgpt: { name: 'ChatGPT', url: 'https://chatgpt.com/' },
+  claude: { name: 'Claude', url: 'https://claude.ai/new' },
+  copilot: { name: 'Copilot', url: 'https://copilot.microsoft.com/' },
+};
+let aiInput = null;
+function openAiDlg(inp) {
+  if (!inp || (!inp.lines.length && !inp.chats.length)) {
+    banner(S.inCall ? '文字起こし・チャットがまだありません。「文字起こし」を押してから話すと、議事録に使えます' : '文字起こし・チャットがないため、議事録は作れません', 7000);
+    return;
+  }
+  aiInput = inp;
+  $('#aiSummary').textContent = `文字起こし ${inp.lines.length} 件・チャット ${inp.chats.length} 件から議事録を作ります。使う AI を選んでください。`;
+  const last = store.get('aiPick', 'gemini');
+  $$('.ai-pick').forEach((b) => b.classList.toggle('on', b.dataset.ai === last));
+  $('#aiDlg').showModal();
+}
+async function sendToAi(id) {
+  const site = AI_SITES[id];
+  const inp = aiInput;
+  if (!site || !inp) return;
+  store.set('aiPick', id);
+  $$('.ai-pick').forEach((b) => b.classList.toggle('on', b.dataset.ai === id));
+  const text = `${MINUTES_SYSTEM}\n\n${minutesPrompt(inp)}`;
+  let copied = false;
+  try { await navigator.clipboard.writeText(text); copied = true; }
+  catch {
+    // 古いブラウザなど：画面に出さない入力欄を使ってコピーする
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    try { copied = document.execCommand('copy'); } catch { copied = false; }
+    ta.remove();
+  }
+  window.open(site.url, '_blank', 'noopener');
+  banner(copied ? `${site.name} を開きました。入力欄に Ctrl+V で貼り付けて、送信してください` : `コピーできませんでした。${site.name} の画面は開いています`, 9000);
+}
+
 async function copyText(text, label) {
   try { await navigator.clipboard.writeText(text); banner(`${label}をコピーしました`, 3000); }
   catch { const t = $('#minutesText'); t.focus(); t.select(); banner('自動でコピーできませんでした。選択された文字をコピーしてください', 5000); }
@@ -1698,7 +1739,9 @@ function openMinutesHistory() {
 }
 function setupMinutes() {
   $('#trBtn').addEventListener('click', () => { if (S.tr.on) stopTr(true); else startTr(true); });
-  $('#minutesBtn').addEventListener('click', () => openMinutes(collectMinutesInput(), { interim: true }));
+  $('#minutesBtn').addEventListener('click', () => (MINUTES_ON ? openMinutes(collectMinutesInput(), { interim: true }) : openAiDlg(collectMinutesInput())));
+  $('#recordAiBtn').addEventListener('click', () => { const r = lastRecord; if (r) openAiDlg({ ...r, docs: r.docs.map((d) => d.name) }); });
+  $$('.ai-pick').forEach((b) => b.addEventListener('click', () => sendToAi(b.dataset.ai)));
   $('#minutesAiBtn').addEventListener('click', runAiMinutes);
   $('#minutesCopyBtn').addEventListener('click', () => copyText($('#minutesText').value, '議事録'));
   $('#minutesCopyPromptBtn').addEventListener('click', () => {
@@ -4609,7 +4652,7 @@ async function init() {
   }
   // 議事録の自動作成は保留中：議事録のボタンを出さない（文字起こし・字幕は使える）
   if (!MINUTES_ON) {
-    for (const id of ['#minutesBtn', '#historyBtn']) $(id).classList.add('feature-off');
+    $('#historyBtn').classList.add('feature-off');
     $('#trBtn').title = '話した内容を文字にして、画面の下に字幕で出す（相手側も自動で始まります）';
   }
   setupMeet();

@@ -241,7 +241,7 @@
       <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
       <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
       <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
-      <button id="minutesBtn" class="tool wide" title="ここまでの議事録を作る">議事録</button>
+      <button id="minutesBtn" class="tool wide" title="ここまでの文字起こし・チャットから、Gemini・ChatGPT・Claude で議事録を作る">議事録（AI）</button>
       <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
       <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
       <button id="recordBtn" class="tool wide" title="ここまでの資料・写真・書き込み・文字起こしを1つのファイル（ZIP）にまとめて保存">記録を保存</button>
@@ -315,8 +315,26 @@
     <p class="hint">資料・写真の元のファイル、書き込みのあるページ（書き込み付きの画像）、文字起こしとチャットを、1つのファイル（ZIP）にまとめてダウンロードのフォルダに保存します。保存しないと、この記録は消えます。</p>
     <div class="row end">
       <button class="ghost" value="cancel">保存しない</button>
+      <button id="recordAiBtn" class="ghost" type="button">AIで議事録</button>
       <button id="recordSaveBtn" class="primary" type="button">保存する</button>
     </div>
+  </form>
+</dialog>
+
+<!-- ===== AIで議事録（Gemini・ChatGPT・Claude に貼り付けて作る） ===== -->
+<dialog id="aiDlg">
+  <form method="dialog">
+    <h2>AIで議事録を作る</h2>
+    <p id="aiSummary"></p>
+    <div class="ai-choices">
+      <button type="button" class="ghost ai-pick" data-ai="gemini"><b>Gemini</b><small>長い打ち合わせ向き（Google）</small></button>
+      <button type="button" class="ghost ai-pick" data-ai="chatgpt"><b>ChatGPT</b><small>見やすくまとめるのが上手</small></button>
+      <button type="button" class="ghost ai-pick" data-ai="claude"><b>Claude</b><small>数値・名前を正確に残すのが得意</small></button>
+      <button type="button" class="ghost ai-pick" data-ai="copilot"><b>Copilot</b><small>Microsoft のアカウントで使える（長い打ち合わせは入りきらないことあり）</small></button>
+    </div>
+    <p class="hint">押すと、議事録の作り方の指示と文字起こし・チャットがコピーされ、選んだ AI の画面が新しく開きます。開いた画面の入力欄で <b>Ctrl+V（貼り付け）→ 送信</b> を押してください（スマホは入力欄を長押しして「貼り付け」）。</p>
+    <p class="hint">無料版では、貼り付けた内容が各社のサービス改善に使われることがあります。各 AI の設定（Gemini は「Gemini アプリ アクティビティ」、ChatGPT は「データ コントロール」、Claude は「プライバシー」、Copilot は「プライバシー」の「モデルのトレーニング」）で止められます。</p>
+    <div class="row end"><button class="primary" value="close">閉じる</button></div>
   </form>
 </dialog>
 
