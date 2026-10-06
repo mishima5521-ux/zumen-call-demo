@@ -83,6 +83,7 @@ const S = {
   incoming: new Map(),   // 受信中ファイル
   pendingDoc: null,
   share: null,           // 画面共有中 { stream, track, prev }
+  previews: new Map(),   // 相手から先に届いた図面の見本画像 docId -> { name, kind, pages, imgs: Map(page -> {img, W, H}) }
 };
 if (QS.has('debug')) window.__zumen = S; // 動作確認用
 
@@ -512,6 +513,7 @@ function acceptConn(c) {
   clearTimeout(S.hostWaitTimer);
   S.conn = c;
   bindConn(c);
+  fileChannel();
   c.send({ t: 'accept', token: S.token, name: S.name });
   sendHello();
   onCallConnected();
@@ -622,6 +624,7 @@ function onAccepted(o, m) {
   if (!S.inCall) enterCall();
   S.conn = o.c;
   bindConn(o.c);
+  fileChannel();
   const call = S.peer.call(o.peerId, S.localStream, { metadata: { token: S.token } });
   if (call) bindCall(call);
   sendHello();
@@ -680,6 +683,7 @@ function hangup(msg, notifyPeer = true) {
   S.myStack = []; S.content = { type: 'none' }; S.contentTs = 0; S.cur = null; S.partner = null; S.token = null;
   for (const t of docReqTimers.values()) clearTimeout(t);
   docReqTimers.clear();
+  S.previews.clear();
   renderTabs();
   if (S.quality !== 'std') setQuality('std');
   progress(null); banner(null);
@@ -706,6 +710,8 @@ function bindConn(c) {
 function onConnClosed(c) {
   if (S.conn !== c || !S.inCall) return;
   S.conn = null;
+  S.incoming.clear();
+  progress(null);
   if (S.call) { try { S.call.close(); } catch { /* 既に閉じている */ } S.call = null; }
   setRemoteStream(null);
   S.pointers.delete('remote');
@@ -1508,7 +1514,9 @@ function onMessage(m) {
     case 'del': deleteStroke(m.id, false); break;
     case 'clear': clearStrokes(m.key, false); break;
     case 'snap-req': banner(`${S.remoteName} の依頼で撮影します`); takeSnapshot(); break;
-    case 'doc-req': sendDoc(S.docs.get(m.id)); break;
+    case 'doc-req': { const d = S.docs.get(m.id); if (d) { d.remoteHas = false; sendDoc(d); } break; }
+    case 'got': { const d = S.docs.get(m.id); if (d) d.remoteHas = true; break; }
+    case 'pv': onPreview(m); break;
     case 'doc-close': closeDoc(m.id, { fromRemote: true }); break;
     case 'share': banner(m.on ? `${S.remoteName} が画面を共有しています` : `${S.remoteName} が画面の共有を終えました`, 5000); break;
     case 'msg': banner(m.text); break;
@@ -1523,6 +1531,7 @@ function onMessage(m) {
 
 function onHello(m) {
   if (m.name) S.remoteName = m.name;
+  for (const id of m.docs || []) { const d = S.docs.get(id); if (d) d.remoteHas = true; }
   el.remoteWipe.querySelector('.wipe-label').textContent = S.remoteName;
   const mine = S.content.type !== 'none';
   const newer = S.contentTs > (m.contentTs || 0) || (S.contentTs === m.contentTs && S.role === 'host');
@@ -1552,13 +1561,25 @@ function ensurePdfjs() {
   const lib = window.pdfjsLib;
   lib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
   if (location.protocol === 'file:') {
-    // ファイルを直接開いた場合は Worker が使えないので、同じスレッドで処理する
-    pdfReady = new Promise((res, rej) => {
+    // ファイルを直接開いた場合は、ファイル指定の Worker が使えない。
+    // 中身を文字列で読み込み、メモリ上（Blob）から別スレッドで動かす（図面の処理中も画面と送受信が止まらない）
+    const load = (src) => new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = 'vendor/pdf.worker.min.js';
-      s.onload = () => res(lib);
+      s.src = src;
+      s.onload = res;
       s.onerror = rej;
       document.head.appendChild(s);
+    });
+    pdfReady = load('vendor/pdf.worker.blob.js').then(() => {
+      const url = URL.createObjectURL(new Blob([window.__PDF_WORKER_SRC], { type: 'text/javascript' }));
+      lib.GlobalWorkerOptions.workerPort = new Worker(url);
+      delete window.__PDF_WORKER_SRC;
+      return lib;
+    }).catch((e) => {
+      // うまくいかないときは、従来どおり同じスレッドで処理する
+      console.warn('pdf worker', e);
+      lib.GlobalWorkerOptions.workerPort = null;
+      return load('vendor/pdf.worker.min.js').then(() => lib);
     });
   } else {
     pdfReady = Promise.resolve(lib);
@@ -1602,9 +1623,12 @@ function sendDoc(doc) {
   });
 }
 async function sendDocNow(doc) {
+  if (!S.conn || !S.conn.open || doc.remoteHas) return;
+  const buf = await doc.blob.arrayBuffer();
+  const ch = await openFileChannel();
+  if (ch) return sendViaFileChannel(ch, doc, buf);
   {
-    if (!S.conn || !S.conn.open) return;
-    const buf = await doc.blob.arrayBuffer();
+    // 図面専用の通り道が使えないとき（古い版の相手など）は、制御用の接続で少しずつ送る
     const size = buf.byteLength;
     send({ t: 'fb', id: doc.id, kind: doc.kind, name: doc.name, mime: doc.mime, size });
     for (let off = 0; off < size; off += CHUNK) {
@@ -1615,6 +1639,108 @@ async function sendDocNow(doc) {
     send({ t: 'fe', id: doc.id });
     progress(null);
   }
+}
+
+// ---- 図面専用の通り道 ----
+//   制御用の接続（ポインター・書き込みなど）とは別に、番号を決めたデータチャネルを両側で作る。
+//   大きな塊のまま変換なしで流せるので速く、図面の送信中もポインターが遅れない。
+const FILE_CH_ID = 50;
+const FCHUNK = 64 * 1024;
+function fileChannel() {
+  const c = S.conn;
+  const pc = c && c.peerConnection;
+  if (!pc || pc.signalingState === 'closed') return null;
+  if (c._fch && c._fch.readyState !== 'closed') return c._fch;
+  try {
+    const ch = pc.createDataChannel('zumen-file', { negotiated: true, id: FILE_CH_ID, ordered: true });
+    ch.binaryType = 'arraybuffer';
+    ch.bufferedAmountLowThreshold = 1 << 20;
+    ch.onmessage = (e) => { if (S.conn === c) onFileData(e.data); };
+    c._fch = ch;
+    return ch;
+  } catch (e) { console.warn('file channel', e); return null; }
+}
+// 開くまで少し待つ（相手が古い版だと開かないので、そのときは null）
+async function openFileChannel(ms = 3000) {
+  const ch = fileChannel();
+  if (!ch) return null;
+  const end = Date.now() + ms;
+  while (ch.readyState === 'connecting' && Date.now() < end) await sleep(50);
+  return ch.readyState === 'open' ? ch : null;
+}
+let rxFileId = null;
+function onFileData(d) {
+  if (typeof d === 'string') {
+    let m; try { m = JSON.parse(d); } catch { return; }
+    if (m.t === 'fb') { rxFileId = m.id; fileBegin(m); }
+    else if (m.t === 'fe') { rxFileId = null; fileEnd(m); }
+    return;
+  }
+  if (rxFileId) fileChunk({ id: rxFileId, d });
+}
+async function sendViaFileChannel(ch, doc, buf) {
+  const c = S.conn;
+  const size = buf.byteLength;
+  ch.send(JSON.stringify({ t: 'fb', id: doc.id, kind: doc.kind, name: doc.name, mime: doc.mime, size }));
+  for (let off = 0, n = 0; off < size; off += FCHUNK, n++) {
+    if (ch.bufferedAmount > 4 * FCHUNK * 16) {
+      await new Promise((r) => {
+        const done = () => { ch.removeEventListener('bufferedamountlow', done); ch.removeEventListener('close', done); r(); };
+        ch.addEventListener('bufferedamountlow', done);
+        ch.addEventListener('close', done);
+      });
+    }
+    if (ch.readyState !== 'open' || S.conn !== c || doc.remoteHas) { progress(null); return; }
+    ch.send(buf.slice(off, Math.min(size, off + FCHUNK)));
+    if (n % 16 === 0) progress(`相手に送信中 ${doc.name}`, off / size);
+  }
+  ch.send(JSON.stringify({ t: 'fe', id: doc.id }));
+  progress(null);
+}
+
+// ---- 見本画像（大きな図面は、先に軽い画像を送って相手の画面にすぐ映す） ----
+const PREVIEW_MIN = 600 * 1024;   // これより小さいファイルは本物をそのまま送る方が早い
+const PREVIEW_PX = 2000;
+async function sendPreview(doc, page) {
+  if (!doc || doc.remoteHas || doc.blob.size < PREVIEW_MIN || !S.conn || !S.conn.open) return;
+  doc.pvSent = doc.pvSent || new Set();
+  if (doc.pvSent.has(page)) return;
+  doc.pvSent.add(page);
+  try {
+    let src, W, H;
+    if (doc.kind === 'pdf') {
+      const pg = await doc.pdf.getPage(clamp(page, 1, doc.pages));
+      const vp = pg.getViewport({ scale: 1 });
+      W = vp.width; H = vp.height;
+      src = await renderLow(pg);
+    } else {
+      W = doc.img.width; H = doc.img.height;
+      src = doc.img;
+    }
+    if (doc.remoteHas) return;
+    const k = Math.min(1, PREVIEW_PX / Math.max(src.width, src.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(src, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.8));
+    if (!blob || doc.remoteHas) return;
+    send({ t: 'pv', id: doc.id, kind: doc.kind, name: doc.name, pages: doc.pages, page, W, H, img: await blob.arrayBuffer() });
+  } catch (e) { console.warn('preview', e); doc.pvSent.delete(page); }
+}
+async function onPreview(m) {
+  if (S.docs.has(m.id)) return;
+  const data = m.img instanceof ArrayBuffer ? m.img : m.img && m.img.buffer ? m.img.buffer.slice(m.img.byteOffset, m.img.byteOffset + m.img.byteLength) : m.img;
+  let img;
+  try { img = await createImageBitmap(new Blob([data], { type: 'image/jpeg' })); } catch { return; }
+  if (S.docs.has(m.id) || !S.inCall) return;
+  let pv = S.previews.get(m.id);
+  if (!pv) { pv = { id: m.id, name: m.name, kind: m.kind, pages: m.pages, imgs: new Map() }; S.previews.set(m.id, pv); }
+  pv.imgs.set(m.page, { img, W: m.W, H: m.H });
+  renderTabs();
+  const c = S.content;
+  if (c.type === 'doc' && c.docId === m.id && c.page === m.page && (!S.cur || S.cur.preview)) prepareContent();
 }
 
 // 表示する図面が手元にない（再接続で取りこぼした等）ときは、少し待ってから相手に送ってもらう
@@ -1646,7 +1772,11 @@ async function fileEnd(m) {
   progress(null);
   const doc = { id: m.id, kind: f.meta.kind, name: f.meta.name, mime: f.meta.mime, blob: new Blob(f.parts, { type: f.meta.mime }) };
   if (S.docs.has(doc.id)) return; // 同じ図面を二重に受け取った
+  const pv = S.previews.get(doc.id);
+  if (pv) doc.pvImgs = pv.imgs;
   try { await prepareDoc(doc); } catch (e) { console.error(e); banner('受け取った図面を開けませんでした'); return; }
+  S.previews.delete(doc.id);
+  send({ t: 'got', id: doc.id });
   if (S.content.type === 'doc' && S.content.docId === doc.id) prepareContent();
 }
 
@@ -1665,6 +1795,7 @@ function setContent(c, { send: doSend = true, view = null, ts = null } = {}) {
   S.contentTs = ts || Date.now();
   S.view = view ? { ...view } : { cx: 0.5, cy: 0.5, zoom: 1 };
   if (doSend) send({ t: 'content', c, ts: S.contentTs, view: S.view });
+  if (c.type === 'doc') sendPreview(S.docs.get(c.docId), c.page); // 相手がページを送っても、その見本を返す
   // 自分のカメラが大きく映されたら自動で高画質に、外れたら元に戻す
   if (c.type === 'live' && c.who === S.role && S.quality === 'std') setQuality('hi', { auto: true });
   else if (!(c.type === 'live' && c.who === S.role) && S.autoBoosted) setQuality('std');
@@ -1685,7 +1816,16 @@ async function prepareContent() {
     return redrawAll();
   }
   const doc = S.docs.get(c.docId);
-  if (!doc) { S.cur = null; redrawAll(); progress('図面を受信中…', 0); requestDocLater(c.docId); return; }
+  if (!doc) {
+    const pv = S.previews.get(c.docId);
+    const p = pv && pv.imgs.get(c.page);
+    if (p) S.cur = { key, kind: 'image', W: p.W, H: p.H, img: p.img, preview: true };
+    else { S.cur = null; progress('図面を受信中…', 0); }
+    redrawAll();
+    if (p && !S.incoming.has(c.docId)) progress(`高画質の図面を受信中… ${pv.name}`, 0);
+    requestDocLater(c.docId);
+    return;
+  }
   if (doc.kind === 'image') {
     S.cur = { key, kind: 'image', W: doc.img.width, H: doc.img.height, img: doc.img, doc };
     return redrawAll();
@@ -1693,29 +1833,36 @@ async function prepareContent() {
   const page = await doc.pdf.getPage(clamp(c.page, 1, doc.pages));
   if (seq !== prepSeq) return;
   const vp = page.getViewport({ scale: 1 });
-  const cur = { key, kind: 'pdf', W: vp.width, H: vp.height, page, doc, low: null };
+  const pvp = doc.pvImgs && doc.pvImgs.get(c.page);
+  const cur = { key, kind: 'pdf', W: vp.width, H: vp.height, page, doc, low: pvp ? pvp.img : null };
   S.cur = cur;
   redrawAll();
   cur.low = await renderLow(page);
+  if (pvp) doc.pvImgs.delete(c.page);
   if (S.cur === cur) drawBase();
 }
 
 // ズーム中の仮表示用に、ページ全体を中くらいの解像度で1枚描いておく
 const lowCache = new Map();
-async function renderLow(page) {
+function renderLow(page) {
+  // 自分の表示用と相手への見本画像用で同じページを二重に描かないよう、描画中の約束（Promise）ごと覚える
   const k = page;
   if (lowCache.has(k)) return lowCache.get(k);
-  const vp1 = page.getViewport({ scale: 1 });
-  const scale = 2400 / Math.max(vp1.width, vp1.height);
-  const vp = page.getViewport({ scale });
-  const c = document.createElement('canvas');
-  c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
-  const g = c.getContext('2d');
-  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
-  await page.render({ canvasContext: g, viewport: vp }).promise;
-  lowCache.set(k, c);
+  const job = (async () => {
+    const vp1 = page.getViewport({ scale: 1 });
+    const scale = 2400 / Math.max(vp1.width, vp1.height);
+    const vp = page.getViewport({ scale });
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: g, viewport: vp }).promise;
+    return c;
+  })();
+  lowCache.set(k, job);
+  job.catch(() => lowCache.delete(k));
   if (lowCache.size > 6) lowCache.delete(lowCache.keys().next().value);
-  return c;
+  return job;
 }
 
 function attachStageVideo() {
@@ -2310,7 +2457,17 @@ async function pollStats() {
     const why = { bandwidth: '・回線で制限中', cpu: '・PC性能で制限中' }[outb.qualityLimitationReason] || '';
     parts.push(`送信 ${outb.frameWidth}×${outb.frameHeight}${why}`);
   }
+  // 直接つながらず中継サーバー（TURN）を通っていると、映像も図面の送信も遅くなる
+  let relay = false;
+  rep.forEach((r) => {
+    if (r.type !== 'transport' || !r.selectedCandidatePairId) return;
+    const pair = rep.get(r.selectedCandidatePairId);
+    const lc = pair && rep.get(pair.localCandidateId), rc = pair && rep.get(pair.remoteCandidateId);
+    relay = relay || (lc && lc.candidateType === 'relay') || (rc && rc.candidateType === 'relay');
+  });
+  if (relay) parts.push('中継サーバー経由（図面の送信が遅くなります）');
   el.statsText.textContent = parts.join(' ／ ');
+  el.statsText.classList.toggle('warn', relay);
 }
 
 // ===================================================================
@@ -2329,7 +2486,7 @@ function setColor(c) {
 }
 function updateToolbar() {
   const c = S.content;
-  const doc = c.type === 'doc' ? S.docs.get(c.docId) : null;
+  const doc = c.type === 'doc' ? S.docs.get(c.docId) || S.previews.get(c.docId) : null;
   const isPdf = doc && doc.kind === 'pdf';
   el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? (c.screen ? '画面' : 'カメラ') : '-';
   $('#prevBtn').disabled = !isPdf || c.page <= 1;
@@ -2356,7 +2513,7 @@ function setFullscreen(on) {
 function gotoPage(d) {
   const c = S.content;
   if (c.type !== 'doc') return;
-  const doc = S.docs.get(c.docId);
+  const doc = S.docs.get(c.docId) || S.previews.get(c.docId);
   if (!doc) return;
   const page = clamp(c.page + d, 1, doc.pages);
   if (page !== c.page) setContent({ ...c, page });
@@ -2390,7 +2547,8 @@ function renderTabs() {
   if (!bar) return;
   const c = S.content;
   // 拡大・移動のたびに作り直さないよう、タブの中身が変わったときだけ描き直す
-  const sig = [...S.docs.values()].map((d) => `${d.id}.${d.pages}.${d.lastPage || 1}`).join() + '|' + (c.type === 'doc' ? `${c.docId}.${c.page}` : '');
+  const pending = [...S.previews.values()].filter((p) => !S.docs.has(p.id));
+  const sig = [...S.docs.values()].map((d) => `${d.id}.${d.pages}.${d.lastPage || 1}`).join() + '|' + pending.map((p) => p.id).join() + '|' + (c.type === 'doc' ? `${c.docId}.${c.page}` : '');
   if (sig === tabSig) return;
   tabSig = sig;
   const list = $('#tabList');
@@ -2431,11 +2589,42 @@ function renderTabs() {
     list.appendChild(tab);
     if (active) requestAnimationFrame(() => tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   }
-  bar.classList.toggle('empty', !S.docs.size);
+  // 見本画像だけ届いていて、本物を受信中の図面
+  for (const p of pending) {
+    const active = c.type === 'doc' && c.docId === p.id;
+    const tab = document.createElement('div');
+    tab.className = 'tab loading' + (active ? ' on' : '');
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'tab-main';
+    main.setAttribute('role', 'tab');
+    main.setAttribute('aria-selected', active ? 'true' : 'false');
+    main.title = `${p.name}（受信中）`;
+    const ic = document.createElement('span');
+    ic.className = 'tab-ic';
+    ic.textContent = docIcon(p);
+    const nm = document.createElement('span');
+    nm.className = 'tab-name';
+    nm.textContent = p.name.replace(/\.[^.]+$/, '');
+    const st = document.createElement('span');
+    st.className = 'tab-page';
+    st.textContent = '受信中';
+    main.append(ic, nm, st);
+    main.addEventListener('click', () => { if (!active) setContent({ type: 'doc', docId: p.id, page: p.imgs.keys().next().value || 1 }); });
+    tab.appendChild(main);
+    list.appendChild(tab);
+  }
+  bar.classList.toggle('empty', !S.docs.size && !pending.length);
 }
 async function closeDoc(id, { fromRemote = false } = {}) {
   const d = S.docs.get(id);
-  if (!d) return;
+  if (!d) {
+    if (fromRemote && S.previews.delete(id)) {
+      if (S.content.type === 'doc' && S.content.docId === id) setContent({ type: 'none' }, { send: false });
+      renderTabs();
+    }
+    return;
+  }
   const keys = [...S.strokes.keys()].filter((k) => k.startsWith(id + ':'));
   const inked = keys.some((k) => (S.strokes.get(k) || []).length);
   if (!fromRemote && !(await askConfirm(`「${d.name}」のタブを閉じます。${inked ? '書き込みも消えます。' : ''}相手の画面からも閉じます。`, '閉じる'))) return;

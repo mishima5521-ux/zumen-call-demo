@@ -421,3 +421,6 @@ dialog.minutes { width: min(820px, calc(100% - 24px)); }
   .tab-main { font-size: 13px; }
   .tab-add { display: none; }
 }
+.tab.loading .tab-main { font-style: italic; }
+.tab.loading .tab-page { color: var(--accent-dark); }
+.stats.warn { color: var(--gold); }
