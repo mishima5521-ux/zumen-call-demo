@@ -52,8 +52,11 @@ const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool 
   && (st.tool !== 'text' || (typeof st.text === 'string' && st.text.length >= 1 && st.text.length <= 1000 && st.pts.length === 2 && finite(st.sw)))
   && (st.tool !== 'dim' || validDim(st))
   && validPts(st.pts, 8000);
-// 寸法：pts＝[1点目 u,v, 2点目 u,v, 寸法線の位置 u,v]、mode＝h（横）・v（縦）・a（2点に平行）、text＝寸法の文字（空でもよい）
-const validDim = (st) => st.pts.length === 6 && (st.mode === 'h' || st.mode === 'v' || st.mode === 'a') && typeof st.text === 'string' && st.text.length <= 60 && finite(st.sw);
+// 寸法：mode＝h（横）・v（縦）・a（2点に平行）… pts＝[1点目, 2点目, 寸法線の位置]
+//   ang（角度）… pts＝[1本目の線の2点, 2本目の線の2点, 円弧の位置]、lead（引き出し線）… pts＝[矢印の先, 文字の位置]
+//   （それぞれ u,v の組）。text＝寸法の文字（空でもよい）
+const DIM_PTS = { h: 6, v: 6, a: 6, ang: 10, lead: 4 }; // 種類ごとの点の数（最後の点＝寸法線・円弧・文字の位置）
+const validDim = (st) => typeof st.mode === 'string' && Object.hasOwn(DIM_PTS, st.mode) && st.pts.length === DIM_PTS[st.mode] && typeof st.text === 'string' && st.text.length <= 60 && finite(st.sw);
 const validView = (v) => !!v && finite(v.cx) && finite(v.cy) && finite(v.zoom) && v.zoom > 0 && v.zoom <= 1000;
 function validContent(c) {
   if (!c || typeof c !== 'object') return false;
@@ -125,7 +128,8 @@ const S = {
   myStack: [],           // [key, id] 自分の書き込み（戻す用）
   tool: 'laser',
   color: COLORS[0],
-  inkW: Object.assign({ pen: 1, hl: 1, text: 1, dim: 1 }, store.get('inkW', {})), // 道具ごとの太さ（INK_WIDTHS の番号）
+  inkW: Object.assign({ pen: 1, hl: 1, text: 1, dim: 1 }, store.get('inkW', {})),
+  dimKind: Object.hasOwn({ auto: 1, h: 1, v: 1, a: 1, ang: 1, lead: 1 }, store.get('dimKind', 'auto')) ? store.get('dimKind', 'auto') : 'auto', // 寸法の種類 // 道具ごとの太さ（INK_WIDTHS の番号）
   pointers: new Map(),   // 'me' | 'remote' -> { pts:[{u,v,t}], key, name, last }
   incoming: new Map(),   // 受信中ファイル
   pendingDoc: null,
@@ -1896,7 +1900,7 @@ function onMessage(m, c = S.conn) {
       const st = isId(m.id) && S.strokeById.get(m.id);
       const dim = st && st.tool === 'dim';
       if (st && (st.tool === 'text' || dim) && typeof m.text === 'string' && (dim ? m.text.length <= 60 : m.text.length >= 1 && m.text.length <= 1000) && finite(m.sw) && m.sw >= 0.5 && m.sw <= 120
-        && typeof m.color === 'string' && /^#[0-9a-f]{6}$/i.test(m.color) && validPts(m.pts, 6) && m.pts.length === (dim ? 6 : 2)) {
+        && typeof m.color === 'string' && /^#[0-9a-f]{6}$/i.test(m.color) && validPts(m.pts, 10) && m.pts.length === (dim ? st.pts.length : 2)) {
         if (dimEd && dimEd.st === st) cancelDim();
         if (textEd && textEd.id === st.id) commitText(true); // ほかの人が同時に直したときは、そちらを使う
         updateText(st, { text: m.text, sw: m.sw, color: m.color, pts: m.pts }, false);
@@ -2509,7 +2513,7 @@ function drawStrokes(g, list, t) {
       const b = textBox(g, st, t.ox + p[0] * sx, t.oy + p[1] * sy, st.sw * px);
       b.lines.forEach((ln, i) => g.fillText(ln, b.x, b.y + i * b.lh));
     } else if (st.tool === 'dim') {
-      drawDim(g, dimGeom(st, t), st.text, st.sw * px, px);
+      drawDim(g, st, t, st.sw * px, px);
     } else if (p.length === 2) {
       g.beginPath();
       g.arc(t.ox + p[0] * sx, t.oy + p[1] * sy, g.lineWidth / 2, 0, Math.PI * 2);
@@ -2526,10 +2530,19 @@ function drawStrokes(g, list, t) {
 
 // ===================================================================
 // 寸法：2点を押す → 寸法線を置きたいところを押す → 寸法を入力
-//   2点の上下に置くと横の寸法、左右に置くと縦の寸法、2点の間に置くと2点に平行な寸法（CAD の寸法と同じ）
+//   種類は 自動・横・縦・平行（2点の距離）・角度・引き出し線。自動は、2点の上下に置くと横、左右に置くと縦、
+//   2点の間に置くと平行（CAD の寸法と同じ）。角度は 1本目の線の2点・2本目の線の2点を押して、円弧を置く
 // ===================================================================
-let dimDraft = null; // 作っている途中 { key, a:{u,v}, b:{u,v}|null, hover:{u,v}|null }
-let dimEd = null;    // 寸法の入力欄 { box, inp, st（直すとき）| draft }
+let dimDraft = null; // 作っている途中 { key, kind, pts:[{u,v}…], hover:{u,v}|null }
+let dimEd = null;    // 寸法の入力欄 { box, inp, st（直すとき） }
+// 種類：auto（置く位置で横・縦・平行）・h（横）・v（縦）・a（2点の距離＝平行）・ang（角度）・lead（引き出し線）
+const DIM_KINDS = { auto: '自動', h: '横', v: '縦', a: '平行', ang: '角度', lead: '引出線' };
+const DIM_NEED = { auto: 2, h: 2, v: 2, a: 2, ang: 4, lead: 1 }; // 寸法線を置く前に押す点の数
+const DIM_STEPS = {
+  auto: ['1点目', '2点目'], h: ['1点目', '2点目'], v: ['1点目', '2点目'], a: ['1点目', '2点目'],
+  ang: ['1本目の線の1点目', '1本目の線の2点目', '2本目の線の1点目', '2本目の線の2点目'], lead: ['矢印の先'],
+};
+const DIM_PLACE = { auto: '寸法線を置きたいところ', h: '寸法線を置きたいところ', v: '寸法線を置きたいところ', a: '寸法線を置きたいところ', ang: '角度の円弧を描きたいところ', lead: '文字を書きたいところ' };
 function dimMode(A, B, C) {
   const x0 = Math.min(A.x, B.x), x1 = Math.max(A.x, B.x), y0 = Math.min(A.y, B.y), y1 = Math.max(A.y, B.y);
   const outY = C.y < y0 || C.y > y1, outX = C.x < x0 || C.x > x1;
@@ -2538,10 +2551,76 @@ function dimMode(A, B, C) {
   if (outX && outY) return Math.min(Math.abs(C.y - (C.y < y0 ? y0 : y1)) / (y1 - y0 + 1), 9) >= Math.min(Math.abs(C.x - (C.x < x0 ? x0 : x1)) / (x1 - x0 + 1), 9) ? 'h' : 'v';
   return 'a';
 }
-// 画面上の位置：1点目・2点目、寸法線の両端
-function dimGeom(st, t) {
+// 角度：2本の線の交点と、押した位置を含む側の円弧（始まりの角度 s から span だけ）
+function angGeom(A1, B1, A2, B2, P) {
+  const d1x = B1.x - A1.x, d1y = B1.y - A1.y, d2x = B2.x - A2.x, d2y = B2.y - A2.y;
+  const cr = d1x * d2y - d1y * d2x;
+  if (Math.abs(cr) < 1e-6 * Math.hypot(d1x, d1y) * Math.hypot(d2x, d2y) + 1e-9) return null; // 平行
+  const k = ((A2.x - A1.x) * d2y - (A2.y - A1.y) * d2x) / cr;
+  const O = { x: A1.x + d1x * k, y: A1.y + d1y * k };
+  const a1 = Math.atan2(d1y, d1x), a2 = Math.atan2(d2y, d2x);
+  const phi = Math.atan2(P.y - O.y, P.x - O.x);
+  const N = (x) => { x %= 2 * Math.PI; return x < 0 ? x + 2 * Math.PI : x; };
+  for (const s of [a1, a1 + Math.PI]) for (const e of [a2, a2 + Math.PI]) {
+    for (const [s0, e0] of [[s, e], [e, s]]) {
+      const span = N(e0 - s0);
+      if (span > 1e-6 && span < Math.PI && N(phi - s0) <= span) return { O, s: s0, span, r: Math.max(8, Math.hypot(P.x - O.x, P.y - O.y)) };
+    }
+  }
+  return null;
+}
+const angText = (deg) => { const r = Math.round(deg * 10) / 10; return (Math.abs(r - Math.round(r)) < 0.05 ? String(Math.round(r)) : r.toFixed(1)) + '°'; };
+// 寸法の形（画面上の線・円弧・矢印・文字の位置）。描くときと、押したところに当たるかを見るときに使う
+function dimShape(g, st, t, fs, px = 1) {
   const sx = t.W * t.s, sy = t.H * t.s, p = st.pts;
   const P = (i) => ({ x: t.ox + p[i] * sx, y: t.oy + p[i + 1] * sy });
+  g.font = `700 ${fs}px system-ui, sans-serif`;
+  const text = st.text || '';
+  const tw = text ? g.measureText(text).width : 0, th = fs * 1.1;
+  const ah = Math.max(10 * px, fs * 0.75);
+  const sh = { segs: [], arcs: [], arrows: [], text: null, ah };
+  const seg = (a, b, isExt = false) => sh.segs.push([a.x, a.y, b.x, b.y, isExt]);
+  const ext = (a, d) => { // 補助線：点から少し離して、寸法線より少し先まで
+    const L = Math.hypot(d.x - a.x, d.y - a.y);
+    if (L < 1) return;
+    const ux = (d.x - a.x) / L, uy = (d.y - a.y) / L;
+    seg({ x: a.x + ux * 3 * px, y: a.y + uy * 3 * px }, { x: d.x + ux * 6 * px, y: d.y + uy * 6 * px }, true);
+  };
+  if (st.mode === 'lead') {
+    const T = P(0), E = P(2);
+    const dir = E.x >= T.x ? 1 : -1;
+    const len = Math.max(20 * px, tw + 10 * px);
+    seg(T, E);
+    seg(E, { x: E.x + dir * len, y: E.y });
+    const L = Math.hypot(T.x - E.x, T.y - E.y) || 1;
+    sh.arrows.push({ x: T.x, y: T.y, ux: (T.x - E.x) / L, uy: (T.y - E.y) / L });
+    if (text) sh.text = { cx: E.x + dir * (5 * px + tw / 2), cy: E.y - 3 * px - th / 2, ang: 0, w: tw, h: th };
+    return sh;
+  }
+  if (st.mode === 'ang') {
+    const G = angGeom(P(0), P(2), P(4), P(6), P(8));
+    if (!G) return sh;
+    const { O, s, span, r } = G, e = s + span;
+    sh.arcs.push({ x: O.x, y: O.y, r, s, e });
+    // 円弧の端が線から外れているときは、線を延長する補助線を引く
+    for (const [ang, i] of [[s, 0], [e, 4]]) {
+      const ux = Math.cos(ang), uy = Math.sin(ang);
+      const ta = (P(i).x - O.x) * ux + (P(i).y - O.y) * uy, tb = (P(i + 2).x - O.x) * ux + (P(i + 2).y - O.y) * uy;
+      const E = { x: O.x + ux * r, y: O.y + uy * r };
+      const hi = Math.max(ta, tb), lo = Math.min(ta, tb);
+      if (r > hi + 2) ext({ x: O.x + ux * hi, y: O.y + uy * hi }, E);
+      else if (r < lo - 2) ext({ x: O.x + ux * lo, y: O.y + uy * lo }, E);
+    }
+    const out = r * span < ah * 2.6; // 円弧が短いときは矢印を外側に
+    sh.arrows.push({ x: O.x + Math.cos(s) * r, y: O.y + Math.sin(s) * r, ux: (out ? -1 : 1) * Math.sin(s), uy: (out ? 1 : -1) * Math.cos(s) });
+    sh.arrows.push({ x: O.x + Math.cos(e) * r, y: O.y + Math.sin(e) * r, ux: (out ? 1 : -1) * Math.sin(e), uy: (out ? -1 : 1) * Math.cos(e) });
+    if (text) {
+      const m = s + span / 2, rr = r + th * 0.5 + Math.abs(Math.cos(m)) * tw / 2 + 4 * px;
+      sh.text = { cx: O.x + Math.cos(m) * rr, cy: O.y + Math.sin(m) * rr, ang: 0, w: tw, h: th };
+    }
+    return sh;
+  }
+  // 長さの寸法（横・縦・平行）
   const A = P(0), B = P(2), C = P(4);
   let d1, d2;
   if (st.mode === 'h') { d1 = { x: A.x, y: C.y }; d2 = { x: B.x, y: C.y }; }
@@ -2552,71 +2631,66 @@ function dimGeom(st, t) {
     const d = (C.x - A.x) * n.x + (C.y - A.y) * n.y;
     d1 = { x: A.x + n.x * d, y: A.y + n.y * d }; d2 = { x: B.x + n.x * d, y: B.y + n.y * d };
   }
-  return { A, B, d1, d2 };
+  ext(A, d1); ext(B, d2);
+  const L = Math.hypot(d2.x - d1.x, d2.y - d1.y);
+  const ux = L ? (d2.x - d1.x) / L : 1, uy = L ? (d2.y - d1.y) / L : 0;
+  const out = L < ah * 2.6; // 短い寸法は矢印を外側に
+  if (out) seg({ x: d1.x - ux * ah * 2, y: d1.y - uy * ah * 2 }, { x: d2.x + ux * ah * 2, y: d2.y + uy * ah * 2 });
+  else seg(d1, d2);
+  sh.arrows.push({ x: d1.x, y: d1.y, ux: out ? ux : -ux, uy: out ? uy : -uy });
+  sh.arrows.push({ x: d2.x, y: d2.y, ux: out ? -ux : ux, uy: out ? -uy : uy });
+  if (text) {
+    let ang = Math.atan2(d2.y - d1.y, d2.x - d1.x);
+    // 縦の寸法は下から上へ読む向き（図面の決まりと同じ）
+    if (ang > Math.PI / 2 - 0.01) ang -= Math.PI; else if (ang <= -Math.PI / 2 - 0.01) ang += Math.PI;
+    const off = th / 2 + 3;
+    sh.text = { cx: (d1.x + d2.x) / 2 + Math.sin(ang) * off, cy: (d1.y + d2.y) / 2 - Math.cos(ang) * off, ang, w: tw, h: th };
+  }
+  return sh;
 }
-function drawDim(g, G, text, fs, px = 1) {
-  const { A, B, d1, d2 } = G;
+function drawDim(g, st, t, fs, px = 1) {
+  const sh = dimShape(g, st, t, fs, px);
   g.lineWidth = Math.max(1, 1.5 * px);
   g.lineCap = 'butt';
   g.beginPath();
-  // 寸法補助線（点から少し離して、寸法線より少し先まで）
-  for (const [p, d] of [[A, d1], [B, d2]]) {
-    const L = Math.hypot(d.x - p.x, d.y - p.y);
-    if (L < 1) continue;
-    const ux = (d.x - p.x) / L, uy = (d.y - p.y) / L;
-    g.moveTo(p.x + ux * 3 * px, p.y + uy * 3 * px);
-    g.lineTo(d.x + ux * 6 * px, d.y + uy * 6 * px);
-  }
-  const L = Math.hypot(d2.x - d1.x, d2.y - d1.y);
-  const ux = L ? (d2.x - d1.x) / L : 1, uy = L ? (d2.y - d1.y) / L : 0;
-  const ah = Math.max(10 * px, fs * 0.75), aw = ah * 0.34;
-  const out = L < ah * 2.6; // 短い寸法は矢印を外側に
-  if (out) { g.moveTo(d1.x - ux * ah * 2, d1.y - uy * ah * 2); g.lineTo(d2.x + ux * ah * 2, d2.y + uy * ah * 2); }
-  else { g.moveTo(d1.x, d1.y); g.lineTo(d2.x, d2.y); }
+  for (const [x1, y1, x2, y2] of sh.segs) { g.moveTo(x1, y1); g.lineTo(x2, y2); }
   g.stroke();
-  // 両端の矢印
-  for (const [d, s] of [[d1, out ? -1 : 1], [d2, out ? 1 : -1]]) {
-    const bx = d.x + ux * ah * s, by = d.y + uy * ah * s;
+  for (const a of sh.arcs) { g.beginPath(); g.arc(a.x, a.y, a.r, a.s, a.e); g.stroke(); }
+  // 矢印（先の位置 x,y と、先を向く向き ux,uy）
+  const ah = sh.ah, aw = ah * 0.34;
+  for (const a of sh.arrows) {
+    const bx = a.x - a.ux * ah, by = a.y - a.uy * ah;
     g.beginPath();
-    g.moveTo(d.x, d.y);
-    g.lineTo(bx - uy * aw, by + ux * aw);
-    g.lineTo(bx + uy * aw, by - ux * aw);
+    g.moveTo(a.x, a.y);
+    g.lineTo(bx - a.uy * aw, by + a.ux * aw);
+    g.lineTo(bx + a.uy * aw, by - a.ux * aw);
     g.closePath();
     g.fill();
   }
-  if (!text) return;
-  const tb = dimTextBox(g, G, text, fs);
+  if (!sh.text) return;
   g.save();
-  g.translate(tb.cx, tb.cy);
-  g.rotate(tb.ang);
+  g.translate(sh.text.cx, sh.text.cy);
+  g.rotate(sh.text.ang);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(text, 0, 0);
+  g.fillText(st.text, 0, 0);
   g.restore();
 }
-// 寸法の文字の位置（寸法線の中央の上。読める向きにする）
-function dimTextBox(g, G, text, fs) {
-  const { d1, d2 } = G;
-  let ang = Math.atan2(d2.y - d1.y, d2.x - d1.x);
-  // 縦の寸法は下から上へ読む向き（図面の決まりと同じ）
-  if (ang > Math.PI / 2 - 0.01) ang -= Math.PI; else if (ang <= -Math.PI / 2 - 0.01) ang += Math.PI;
-  g.font = `700 ${fs}px system-ui, sans-serif`;
-  const w = g.measureText(text).width, h = fs * 1.1;
-  const off = h / 2 + 3;
-  return { cx: (d1.x + d2.x) / 2 + Math.sin(ang) * off, cy: (d1.y + d2.y) / 2 - Math.cos(ang) * off, ang, w, h };
-}
-// 押したところに寸法があるか（文字・寸法線・補助線）
+// 押したところに寸法があるか（文字・線・円弧）
 function dimHit(st, x, y) {
-  const t = xform();
-  const G = dimGeom(st, t);
-  if (st.text) {
-    const tb = dimTextBox(ctx.ink, G, st.text, st.sw);
+  const sh = dimShape(ctx.ink, st, xform(), st.sw);
+  const tb = sh.text;
+  if (tb) {
     const c = Math.cos(-tb.ang), s = Math.sin(-tb.ang);
     const lx = (x - tb.cx) * c - (y - tb.cy) * s, ly = (x - tb.cx) * s + (y - tb.cy) * c;
     if (Math.abs(lx) < tb.w / 2 + 6 && Math.abs(ly) < tb.h / 2 + 6) return 'text';
   }
-  if (distSeg(x, y, G.d1.x, G.d1.y, G.d2.x, G.d2.y) < 8) return 'line';
-  if (distSeg(x, y, G.A.x, G.A.y, G.d1.x, G.d1.y) < 6 || distSeg(x, y, G.B.x, G.B.y, G.d2.x, G.d2.y) < 6) return 'ext';
+  // 補助線は当たりにしない（同じ点から次の寸法を始められるように）
+  for (const [x1, y1, x2, y2, isExt] of sh.segs) if (!isExt && distSeg(x, y, x1, y1, x2, y2) < 7) return 'line';
+  for (const a of sh.arcs) {
+    const N = (v) => { v %= 2 * Math.PI; return v < 0 ? v + 2 * Math.PI : v; };
+    if (Math.abs(Math.hypot(x - a.x, y - a.y) - a.r) < 7 && N(Math.atan2(y - a.y, x - a.x) - a.s) <= N(a.e - a.s)) return 'line';
+  }
   return null;
 }
 function dimAt(x, y) {
@@ -2630,57 +2704,94 @@ function dimAt(x, y) {
   }
   return null;
 }
+// 作っている途中の寸法の「点の数」→ 寸法の形（mode と pts）
+function draftStroke(d, last) {
+  const t = xform();
+  const P = (q) => ({ x: t.ox + q.u * t.W * t.s, y: t.oy + q.v * t.H * t.s });
+  const pts = [...d.pts, last].flatMap((q) => [q.u, q.v]);
+  let mode = d.kind;
+  if (mode === 'auto') mode = dimMode(P(d.pts[0]), P(d.pts[1]), P(last));
+  return { pts, mode, text: '' };
+}
 // 作っている途中の寸法を描く（点の印・寸法線の予告）
 function drawDimDraft(g, t) {
   if (!dimDraft || !S.cur || dimDraft.key !== S.cur.key) return;
   const sx = t.W * t.s, sy = t.H * t.s;
   const P = (q) => ({ x: t.ox + q.u * sx, y: t.oy + q.v * sy });
+  const d = dimDraft;
   g.save();
   g.strokeStyle = g.fillStyle = S.color;
-  const mark = (q) => { g.lineWidth = 1.5; g.beginPath(); g.moveTo(q.x - 7, q.y); g.lineTo(q.x + 7, q.y); g.moveTo(q.x, q.y - 7); g.lineTo(q.x, q.y + 7); g.stroke(); };
-  const A = P(dimDraft.a);
-  mark(A);
-  if (!dimDraft.b) {
-    if (dimDraft.hover) { const H = P(dimDraft.hover); g.setLineDash([5, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(H.x, H.y); g.stroke(); }
-  } else {
-    const B = P(dimDraft.b);
-    mark(B);
-    const c = dimDraft.dc || dimDraft.hover;
-    if (c) {
-      const C = P(c);
-      const st = { pts: [dimDraft.a.u, dimDraft.a.v, dimDraft.b.u, dimDraft.b.v, c.u, c.v], mode: dimDraft.mode || dimMode(A, B, C) };
-      g.globalAlpha = dimDraft.dc ? 1 : 0.7;
-      drawDim(g, dimGeom(st, t), '', inkWidth('dim'));
-    }
+  g.lineWidth = 1.5;
+  for (const q of d.pts) { const m = P(q); g.beginPath(); g.moveTo(m.x - 7, m.y); g.lineTo(m.x + 7, m.y); g.moveTo(m.x, m.y - 7); g.lineTo(m.x, m.y + 7); g.stroke(); }
+  // 角度：選んだ線を点線で表示
+  g.setLineDash([5, 4]);
+  g.lineWidth = 1;
+  if (d.kind === 'ang') {
+    const line = (a, b) => { const A = P(a), B = P(b); g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); g.stroke(); };
+    if (d.pts.length >= 2) line(d.pts[0], d.pts[1]);
+    if (d.pts.length >= 4) line(d.pts[2], d.pts[3]);
+    if (d.hover && d.pts.length % 2 === 1 && d.pts.length < 4) line(d.pts[d.pts.length - 1], d.hover);
+  } else if (d.kind !== 'lead' && d.pts.length === 1 && d.hover) {
+    const A = P(d.pts[0]), H = P(d.hover); g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(H.x, H.y); g.stroke();
+  }
+  g.setLineDash([]);
+  const last = d.done || d.hover;
+  if (d.pts.length >= DIM_NEED[d.kind] && last) {
+    g.globalAlpha = d.done ? 1 : 0.7;
+    const st = draftStroke(d, last);
+    if (d.kind === 'ang') { const G = angGeom(P(d.pts[0]), P(d.pts[1]), P(d.pts[2]), P(d.pts[3]), P(last)); if (G) st.text = angText(G.span * 180 / Math.PI); }
+    drawDim(g, st, t, inkWidth('dim'));
   }
   g.restore();
 }
 function dimClick(p) {
   if (!S.cur) return;
   const q = toNorm(p.x, p.y);
-  if (!dimDraft || dimDraft.key !== S.cur.key) { dimDraft = { key: S.cur.key, a: q, b: null, hover: null }; banner('寸法：2点目を押してください（Esc でやめる）', 4000); drawInk(); return; }
-  if (!dimDraft.b) {
+  const kind = S.dimKind;
+  if (!dimDraft || dimDraft.key !== S.cur.key || dimDraft.kind !== kind) dimDraft = { key: S.cur.key, kind, pts: [], hover: null };
+  const d = dimDraft;
+  const need = DIM_NEED[kind];
+  if (d.pts.length < need) {
     const t = xform();
-    if (Math.hypot((q.u - dimDraft.a.u) * t.W * t.s, (q.v - dimDraft.a.v) * t.H * t.s) < 4) return; // 同じ点
-    dimDraft.b = q; dimDraft.hover = null;
-    banner('寸法：寸法線を置きたいところを押してください', 4000);
+    const prev = d.pts[d.pts.length - 1];
+    if (prev && (kind !== 'ang' || d.pts.length % 2 === 1) && Math.hypot((q.u - prev.u) * t.W * t.s, (q.v - prev.v) * t.H * t.s) < 4) return; // 同じ点
+    d.pts.push(q);
+    d.hover = null;
+    if (kind === 'ang' && d.pts.length === 4) {
+      const P = (r) => ({ x: t.ox + r.u * t.W * t.s, y: t.oy + r.v * t.H * t.s });
+      const [a, b, c, e] = d.pts.map(P);
+      if (!angGeom(a, b, c, e, { x: a.x + 1, y: a.y + 1 }) && !angGeom(a, b, c, e, { x: a.x - 1, y: a.y + 3 })) { banner('2本の線が平行なので、角度を測れません。もう一度、1本目の線から押してください', 6000); dimDraft = null; drawInk(); return; }
+    }
+    banner(`${DIM_KINDS[kind]}：${d.pts.length < need ? DIM_STEPS[kind][d.pts.length] : DIM_PLACE[kind]}を押してください（Esc でやめる）`, 6000);
     drawInk();
     return;
   }
-  const t = xform();
-  const P = (r) => ({ x: t.ox + r.u * t.W * t.s, y: t.oy + r.v * t.H * t.s });
-  dimDraft.dc = q;
-  dimDraft.mode = dimMode(P(dimDraft.a), P(dimDraft.b), P(q));
+  d.done = q;
   banner(null);
   drawInk();
-  openDimInput(p, null);
+  let pre = '';
+  if (kind === 'ang') {
+    const t = xform();
+    const P = (r) => ({ x: t.ox + r.u * t.W * t.s, y: t.oy + r.v * t.H * t.s });
+    const G = angGeom(...d.pts.map(P), P(q));
+    if (G) pre = angText(G.span * 180 / Math.PI); // 角度は図面の上で測った値を入れておく（直せる）
+  }
+  openDimInput(p, null, pre);
 }
 function cancelDim() {
   if (dimEd) { dimEd.box.remove(); dimEd = null; }
   if (dimDraft) { dimDraft = null; drawInk(); }
 }
+function setDimKind(k) {
+  if (!DIM_KINDS[k]) return;
+  S.dimKind = k;
+  store.set('dimKind', k);
+  $$('#dimKinds .dk').forEach((b) => b.classList.toggle('on', b.dataset.kind === k));
+  cancelDim();
+  if (S.tool === 'dim') banner(`${DIM_KINDS[k]}：${DIM_STEPS[k][0]}を押してください`, 4000);
+}
 // 寸法の文字の入力（新しい寸法・書いた寸法の直し）
-function openDimInput(p, st) {
+function openDimInput(p, st, pre = '') {
   if (dimEd) { dimEd.box.remove(); dimEd = null; }
   const box = document.createElement('div');
   box.className = 'text-ed dim-ed';
@@ -2688,17 +2799,18 @@ function openDimInput(p, st) {
   inp.className = 'text-input';
   inp.maxLength = 60;
   inp.enterKeyHint = 'done';
-  inp.placeholder = '寸法（例：25.0、φ10 H7）';
-  inp.setAttribute('aria-label', '寸法');
-  inp.value = st ? st.text : '';
-  inp.style.fontSize = '18px'; inp.style.width = '200px';
+  const lead = st ? st.mode === 'lead' : dimDraft && dimDraft.kind === 'lead';
+  inp.placeholder = lead ? '文字（例：C0.5 全周、M6 タップ）' : '寸法（例：25.0、φ10 H7、45°）';
+  inp.setAttribute('aria-label', lead ? '引き出し線の文字' : '寸法');
+  inp.value = st ? st.text : pre;
+  inp.style.fontSize = '18px'; inp.style.width = '220px';
   const bar = document.createElement('span');
   bar.className = 'text-bar';
   const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = '確定'; ok.className = 'primary';
   const no = document.createElement('button'); no.type = 'button'; no.textContent = st ? '削除' : 'やめる';
   bar.append(ok, no);
   box.append(inp, bar);
-  box.style.left = clamp(p.x - 100, 0, Math.max(0, SW - 220)) + 'px';
+  box.style.left = clamp(p.x - 110, 0, Math.max(0, SW - 240)) + 'px';
   box.style.top = clamp(p.y + 10, 0, Math.max(0, SH - 80)) + 'px';
   el.stage.appendChild(box);
   dimEd = { box, inp, st };
@@ -2724,8 +2836,9 @@ function commitDim() {
   }
   const d = dimDraft;
   dimDraft = null;
-  if (!d || !d.b || !d.dc || (S.strokes.get(d.key) || []).length >= MAX_STROKES) { drawInk(); return; }
-  const s = { id: rid(), tool: 'dim', color: S.color, w: 0.01, sw: inkWidth('dim'), mode: d.mode, text, pts: [d.a.u, d.a.v, d.b.u, d.b.v, d.dc.u, d.dc.v] };
+  if (!d || !d.done || (S.strokes.get(d.key) || []).length >= MAX_STROKES) { drawInk(); return; }
+  const { pts, mode } = draftStroke(d, d.done);
+  const s = { id: rid(), tool: 'dim', color: S.color, w: 0.01, sw: inkWidth('dim'), mode, text, pts };
   addStroke(d.key, s);
   S.myStack.push([d.key, s.id]);
   send({ t: 'sb', key: d.key, s });
@@ -2947,7 +3060,7 @@ el.ptr.addEventListener('pointerdown', (e) => {
   } else if (tool === 'dim') {
     // 書いた寸法を押す → 文字を直す（寸法線をドラッグすると位置を動かす）。何もないところ → 寸法を作る
     const hit = !dimDraft ? dimAt(p.x, p.y) : null;
-    gesture = { type: 'dim', p, hit, c0: hit && hit.st.pts.slice(4, 6), moved: false, sent: 0 };
+    gesture = { type: 'dim', p, hit, c0: hit && hit.st.pts.slice(-2), moved: false, sent: 0 };
     if (dimDraft) { dimDraft.hover = toNorm(p.x, p.y); drawInk(); }
   } else if (tool === 'text') {
     // 書いた文字を押す → 選んで直す（ドラッグなら移動）。何もないところ → 新しく書く
@@ -3006,8 +3119,9 @@ el.ptr.addEventListener('pointermove', (e) => {
       gesture.moved = true;
       const t = xform();
       const st = gesture.hit.st;
-      st.pts[4] = gesture.c0[0] + (p.x - gesture.p.x) / (t.W * t.s);
-      st.pts[5] = gesture.c0[1] + (p.y - gesture.p.y) / (t.H * t.s);
+      const n = st.pts.length;
+      st.pts[n - 2] = gesture.c0[0] + (p.x - gesture.p.x) / (t.W * t.s);
+      st.pts[n - 1] = gesture.c0[1] + (p.y - gesture.p.y) / (t.H * t.s);
       drawInk();
       if (performance.now() - gesture.sent > 60) { gesture.sent = performance.now(); updateText(st, {}); }
     } else if (dimDraft) { dimDraft.hover = toNorm(p.x, p.y); drawInk(); }
@@ -3158,7 +3272,7 @@ function endPointer(e) {
   else if (gesture.type === 'dim') {
     const g = gesture;
     gesture = null;
-    if (g.hit && g.moved) { updateText(g.hit.st, {}); S.myStack.push([g.hit.st.key, g.hit.st.id, { pts: [...g.hit.st.pts.slice(0, 4), ...g.c0] }]); }
+    if (g.hit && g.moved) { updateText(g.hit.st, {}); S.myStack.push([g.hit.st.key, g.hit.st.id, { pts: [...g.hit.st.pts.slice(0, -2), ...g.c0] }]); }
     else if (e.type === 'pointerup') { if (g.hit) openDimInput(localPos(e), g.hit.st); else dimClick(localPos(e)); }
   }
   else if (gesture.type === 'text') {
@@ -3562,6 +3676,7 @@ function setTool(t) {
   if (t === 'text' && S.color === COLORS[0]) setColor('#e53935'); // 黄色の文字は白い図面で読めない
   if (t !== 'text') commitText();
   if (t !== 'dim') cancelDim();
+  $('#dimKinds').hidden = t !== 'dim';
   if (t === 'dim' && S.color === COLORS[0]) setColor('#e53935');
   renderWidths();
 }
@@ -3823,6 +3938,17 @@ function setupToolbar() {
   }
   setColor(S.color);
   renderWidths();
+  // 寸法の種類の選びボタン
+  for (const [k, label] of Object.entries(DIM_KINDS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dk' + (k === S.dimKind ? ' on' : '');
+    b.dataset.kind = k;
+    b.textContent = label;
+    b.title = { auto: '置く位置で横・縦・平行を自動で選ぶ', h: '横の寸法', v: '縦の寸法', a: '2点の距離（2点を結ぶ線に平行な寸法）', ang: '角度：1本目の線の2点、2本目の線の2点を押し、円弧を置く', lead: '引き出し線：矢印の先を押し、文字を書くところを押す' }[k];
+    b.addEventListener('click', () => setDimKind(k));
+    $('#dimKinds').appendChild(b);
+  }
   $$('.tool-sel').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#openBtn').addEventListener('click', () => el.fileInput.click());
   if (CONV) el.fileInput.accept = CONV.accept;

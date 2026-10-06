@@ -663,3 +663,10 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 #room.full .side-tools [data-tool="eraser"] { grid-column: 1 / -1; }
 /* 画面下の知らせは、押しても下の図面に届く（書き込み・寸法の点を置くじゃまをしない） */
 #banner { pointer-events: none; }
+/* 寸法の種類（自動・横・縦・平行・角度・引出線）：「寸法」を選んだときだけ出る */
+.dimkinds { display: inline-flex; gap: 2px; }
+.dk { min-height: 36px; padding: 2px 6px; font-size: 12px; letter-spacing: 0; white-space: nowrap; border: 1px solid var(--line); background: transparent; }
+.dk.on { background: var(--accent); border-color: var(--ink); color: var(--accent-text); }
+@media (min-width: 721px) { .side-tools .dimkinds { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); } .side-tools .dk { min-height: 32px; padding: 2px; } }
+#room.full .side-tools .dimkinds { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
+#room.full .side-tools .dk { min-height: 28px; padding: 1px; font-size: 11px; }
