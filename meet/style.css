@@ -658,3 +658,8 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 /* 全画面のパレットは、スマホでも見出し → 拡大 → 書き込み → 図面を開く・ページ の順 */
 #room.full .side-tools > .grp { order: 0; }
 #room.full .side-tools > .pal-head { order: -1; }
+/* 左の列・パレット：消しゴムは1段まるごと */
+@media (min-width: 721px) { .side-tools [data-tool="eraser"] { grid-column: 1 / -1; } }
+#room.full .side-tools [data-tool="eraser"] { grid-column: 1 / -1; }
+/* 画面下の知らせは、押しても下の図面に届く（書き込み・寸法の点を置くじゃまをしない） */
+#banner { pointer-events: none; }

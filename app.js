@@ -47,10 +47,13 @@ const isId = (x) => typeof x === 'string' && x.length > 0 && x.length <= 64;
 const isKey = (x) => typeof x === 'string' && x.length > 0 && x.length <= 120;
 const validPts = (p, max) => Array.isArray(p) && p.length % 2 === 0 && p.length <= max && p.every(finite);
 // sw＝画面上の太さ（px）。拡大・縮小しても同じ太さで描く（無い線は図面に対する太さ w で描く＝以前の版の線）
-const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool === 'pen' || st.tool === 'text') && typeof st.color === 'string' && /^#[0-9a-f]{6}$/i.test(st.color) && finite(st.w) && st.w > 0 && st.w < 10
+const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool === 'pen' || st.tool === 'text' || st.tool === 'dim') && typeof st.color === 'string' && /^#[0-9a-f]{6}$/i.test(st.color) && finite(st.w) && st.w > 0 && st.w < 10
   && (st.sw === undefined || (finite(st.sw) && st.sw >= 0.5 && st.sw <= 120))
   && (st.tool !== 'text' || (typeof st.text === 'string' && st.text.length >= 1 && st.text.length <= 1000 && st.pts.length === 2 && finite(st.sw)))
+  && (st.tool !== 'dim' || validDim(st))
   && validPts(st.pts, 8000);
+// 寸法：pts＝[1点目 u,v, 2点目 u,v, 寸法線の位置 u,v]、mode＝h（横）・v（縦）・a（2点に平行）、text＝寸法の文字（空でもよい）
+const validDim = (st) => st.pts.length === 6 && (st.mode === 'h' || st.mode === 'v' || st.mode === 'a') && typeof st.text === 'string' && st.text.length <= 60 && finite(st.sw);
 const validView = (v) => !!v && finite(v.cx) && finite(v.cy) && finite(v.zoom) && v.zoom > 0 && v.zoom <= 1000;
 function validContent(c) {
   if (!c || typeof c !== 'object') return false;
@@ -75,8 +78,8 @@ const QUALITY = {
 
 const COLORS = ['#ffe600', '#ff4fa3', '#39d353', '#3fa9ff', '#e53935', '#222222'];
 // 太さ（画面上の px）：細い・ふつう・太い・とても太い。文字は大きさ
-const INK_WIDTHS = { pen: [2, 4, 7, 12], hl: [12, 20, 30, 44], text: [16, 22, 30, 42] };
-const INK_WIDTH_NAMES = { pen: ['細い', 'ふつう', '太い', 'とても太い'], hl: ['細い', 'ふつう', '太い', 'とても太い'], text: ['小', '中', '大', '特大'] };
+const INK_WIDTHS = { pen: [2, 4, 7, 12], hl: [12, 20, 30, 44], text: [16, 22, 30, 42], dim: [13, 17, 22, 30] };
+const INK_WIDTH_NAMES = { pen: ['細い', 'ふつう', '太い', 'とても太い'], hl: ['細い', 'ふつう', '太い', 'とても太い'], text: ['小', '中', '大', '特大'], dim: ['小', '中', '大', '特大'] };
 
 // ===================================================================
 // 状態
@@ -122,7 +125,7 @@ const S = {
   myStack: [],           // [key, id] 自分の書き込み（戻す用）
   tool: 'laser',
   color: COLORS[0],
-  inkW: Object.assign({ pen: 1, hl: 1, text: 1 }, store.get('inkW', {})), // 道具ごとの太さ（INK_WIDTHS の番号）
+  inkW: Object.assign({ pen: 1, hl: 1, text: 1, dim: 1 }, store.get('inkW', {})), // 道具ごとの太さ（INK_WIDTHS の番号）
   pointers: new Map(),   // 'me' | 'remote' -> { pts:[{u,v,t}], key, name, last }
   incoming: new Map(),   // 受信中ファイル
   pendingDoc: null,
@@ -1891,8 +1894,10 @@ function onMessage(m, c = S.conn) {
     case 'del': if (isId(m.id)) deleteStroke(m.id, false); break;
     case 'tx': {
       const st = isId(m.id) && S.strokeById.get(m.id);
-      if (st && st.tool === 'text' && typeof m.text === 'string' && m.text.length >= 1 && m.text.length <= 1000 && finite(m.sw) && m.sw >= 0.5 && m.sw <= 120
-        && typeof m.color === 'string' && /^#[0-9a-f]{6}$/i.test(m.color) && validPts(m.pts, 2) && m.pts.length === 2) {
+      const dim = st && st.tool === 'dim';
+      if (st && (st.tool === 'text' || dim) && typeof m.text === 'string' && (dim ? m.text.length <= 60 : m.text.length >= 1 && m.text.length <= 1000) && finite(m.sw) && m.sw >= 0.5 && m.sw <= 120
+        && typeof m.color === 'string' && /^#[0-9a-f]{6}$/i.test(m.color) && validPts(m.pts, 6) && m.pts.length === (dim ? 6 : 2)) {
+        if (dimEd && dimEd.st === st) cancelDim();
         if (textEd && textEd.id === st.id) commitText(true); // ほかの人が同時に直したときは、そちらを使う
         updateText(st, { text: m.text, sw: m.sw, color: m.color, pts: m.pts }, false);
       }
@@ -2475,16 +2480,17 @@ async function renderCrisp() {
 const inkPx = (w, h) => Math.max(w, h) / 1200;
 function drawInk() {
   if (textEd && (!S.cur || S.cur.key !== textEd.key)) commitText(); // ページ・タブを替えたら確定
+  if ((dimDraft || dimEd) && (!S.cur || (dimDraft && S.cur.key !== dimDraft.key) || (dimEd && dimEd.st && S.cur.key !== dimEd.st.key))) cancelDim();
   placeTextEd();
   const g = ctx.ink;
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, el.ink.width, el.ink.height);
   if (!S.cur) return;
   const list = S.strokes.get(S.cur.key);
-  if (!list || !list.length) return;
   const d = DPR();
   g.setTransform(d, 0, 0, d, 0, 0);
-  drawStrokes(g, list, xform());
+  if (list && list.length) drawStrokes(g, list, xform());
+  drawDimDraft(g, xform());
 }
 
 // t.px：画面上の太さ（sw）を何倍で描くか（画面は 1、保存する画像は画像の大きさに合わせる）
@@ -2502,6 +2508,8 @@ function drawStrokes(g, list, t) {
     if (st.tool === 'text') {
       const b = textBox(g, st, t.ox + p[0] * sx, t.oy + p[1] * sy, st.sw * px);
       b.lines.forEach((ln, i) => g.fillText(ln, b.x, b.y + i * b.lh));
+    } else if (st.tool === 'dim') {
+      drawDim(g, dimGeom(st, t), st.text, st.sw * px, px);
     } else if (p.length === 2) {
       g.beginPath();
       g.arc(t.ox + p[0] * sx, t.oy + p[1] * sy, g.lineWidth / 2, 0, Math.PI * 2);
@@ -2514,6 +2522,213 @@ function drawStrokes(g, list, t) {
     }
     g.restore();
   }
+}
+
+// ===================================================================
+// 寸法：2点を押す → 寸法線を置きたいところを押す → 寸法を入力
+//   2点の上下に置くと横の寸法、左右に置くと縦の寸法、2点の間に置くと2点に平行な寸法（CAD の寸法と同じ）
+// ===================================================================
+let dimDraft = null; // 作っている途中 { key, a:{u,v}, b:{u,v}|null, hover:{u,v}|null }
+let dimEd = null;    // 寸法の入力欄 { box, inp, st（直すとき）| draft }
+function dimMode(A, B, C) {
+  const x0 = Math.min(A.x, B.x), x1 = Math.max(A.x, B.x), y0 = Math.min(A.y, B.y), y1 = Math.max(A.y, B.y);
+  const outY = C.y < y0 || C.y > y1, outX = C.x < x0 || C.x > x1;
+  if (outY && !outX) return 'h';
+  if (outX && !outY) return 'v';
+  if (outX && outY) return Math.min(Math.abs(C.y - (C.y < y0 ? y0 : y1)) / (y1 - y0 + 1), 9) >= Math.min(Math.abs(C.x - (C.x < x0 ? x0 : x1)) / (x1 - x0 + 1), 9) ? 'h' : 'v';
+  return 'a';
+}
+// 画面上の位置：1点目・2点目、寸法線の両端
+function dimGeom(st, t) {
+  const sx = t.W * t.s, sy = t.H * t.s, p = st.pts;
+  const P = (i) => ({ x: t.ox + p[i] * sx, y: t.oy + p[i + 1] * sy });
+  const A = P(0), B = P(2), C = P(4);
+  let d1, d2;
+  if (st.mode === 'h') { d1 = { x: A.x, y: C.y }; d2 = { x: B.x, y: C.y }; }
+  else if (st.mode === 'v') { d1 = { x: C.x, y: A.y }; d2 = { x: C.x, y: B.y }; }
+  else {
+    const L = Math.hypot(B.x - A.x, B.y - A.y) || 1;
+    const n = { x: -(B.y - A.y) / L, y: (B.x - A.x) / L };
+    const d = (C.x - A.x) * n.x + (C.y - A.y) * n.y;
+    d1 = { x: A.x + n.x * d, y: A.y + n.y * d }; d2 = { x: B.x + n.x * d, y: B.y + n.y * d };
+  }
+  return { A, B, d1, d2 };
+}
+function drawDim(g, G, text, fs, px = 1) {
+  const { A, B, d1, d2 } = G;
+  g.lineWidth = Math.max(1, 1.5 * px);
+  g.lineCap = 'butt';
+  g.beginPath();
+  // 寸法補助線（点から少し離して、寸法線より少し先まで）
+  for (const [p, d] of [[A, d1], [B, d2]]) {
+    const L = Math.hypot(d.x - p.x, d.y - p.y);
+    if (L < 1) continue;
+    const ux = (d.x - p.x) / L, uy = (d.y - p.y) / L;
+    g.moveTo(p.x + ux * 3 * px, p.y + uy * 3 * px);
+    g.lineTo(d.x + ux * 6 * px, d.y + uy * 6 * px);
+  }
+  const L = Math.hypot(d2.x - d1.x, d2.y - d1.y);
+  const ux = L ? (d2.x - d1.x) / L : 1, uy = L ? (d2.y - d1.y) / L : 0;
+  const ah = Math.max(10 * px, fs * 0.75), aw = ah * 0.34;
+  const out = L < ah * 2.6; // 短い寸法は矢印を外側に
+  if (out) { g.moveTo(d1.x - ux * ah * 2, d1.y - uy * ah * 2); g.lineTo(d2.x + ux * ah * 2, d2.y + uy * ah * 2); }
+  else { g.moveTo(d1.x, d1.y); g.lineTo(d2.x, d2.y); }
+  g.stroke();
+  // 両端の矢印
+  for (const [d, s] of [[d1, out ? -1 : 1], [d2, out ? 1 : -1]]) {
+    const bx = d.x + ux * ah * s, by = d.y + uy * ah * s;
+    g.beginPath();
+    g.moveTo(d.x, d.y);
+    g.lineTo(bx - uy * aw, by + ux * aw);
+    g.lineTo(bx + uy * aw, by - ux * aw);
+    g.closePath();
+    g.fill();
+  }
+  if (!text) return;
+  const tb = dimTextBox(g, G, text, fs);
+  g.save();
+  g.translate(tb.cx, tb.cy);
+  g.rotate(tb.ang);
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 0, 0);
+  g.restore();
+}
+// 寸法の文字の位置（寸法線の中央の上。読める向きにする）
+function dimTextBox(g, G, text, fs) {
+  const { d1, d2 } = G;
+  let ang = Math.atan2(d2.y - d1.y, d2.x - d1.x);
+  // 縦の寸法は下から上へ読む向き（図面の決まりと同じ）
+  if (ang > Math.PI / 2 - 0.01) ang -= Math.PI; else if (ang <= -Math.PI / 2 - 0.01) ang += Math.PI;
+  g.font = `700 ${fs}px system-ui, sans-serif`;
+  const w = g.measureText(text).width, h = fs * 1.1;
+  const off = h / 2 + 3;
+  return { cx: (d1.x + d2.x) / 2 + Math.sin(ang) * off, cy: (d1.y + d2.y) / 2 - Math.cos(ang) * off, ang, w, h };
+}
+// 押したところに寸法があるか（文字・寸法線・補助線）
+function dimHit(st, x, y) {
+  const t = xform();
+  const G = dimGeom(st, t);
+  if (st.text) {
+    const tb = dimTextBox(ctx.ink, G, st.text, st.sw);
+    const c = Math.cos(-tb.ang), s = Math.sin(-tb.ang);
+    const lx = (x - tb.cx) * c - (y - tb.cy) * s, ly = (x - tb.cx) * s + (y - tb.cy) * c;
+    if (Math.abs(lx) < tb.w / 2 + 6 && Math.abs(ly) < tb.h / 2 + 6) return 'text';
+  }
+  if (distSeg(x, y, G.d1.x, G.d1.y, G.d2.x, G.d2.y) < 8) return 'line';
+  if (distSeg(x, y, G.A.x, G.A.y, G.d1.x, G.d1.y) < 6 || distSeg(x, y, G.B.x, G.B.y, G.d2.x, G.d2.y) < 6) return 'ext';
+  return null;
+}
+function dimAt(x, y) {
+  if (!S.cur) return null;
+  const list = S.strokes.get(S.cur.key) || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const st = list[i];
+    if (st.tool !== 'dim') continue;
+    const part = dimHit(st, x, y);
+    if (part) return { st, part };
+  }
+  return null;
+}
+// 作っている途中の寸法を描く（点の印・寸法線の予告）
+function drawDimDraft(g, t) {
+  if (!dimDraft || !S.cur || dimDraft.key !== S.cur.key) return;
+  const sx = t.W * t.s, sy = t.H * t.s;
+  const P = (q) => ({ x: t.ox + q.u * sx, y: t.oy + q.v * sy });
+  g.save();
+  g.strokeStyle = g.fillStyle = S.color;
+  const mark = (q) => { g.lineWidth = 1.5; g.beginPath(); g.moveTo(q.x - 7, q.y); g.lineTo(q.x + 7, q.y); g.moveTo(q.x, q.y - 7); g.lineTo(q.x, q.y + 7); g.stroke(); };
+  const A = P(dimDraft.a);
+  mark(A);
+  if (!dimDraft.b) {
+    if (dimDraft.hover) { const H = P(dimDraft.hover); g.setLineDash([5, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(H.x, H.y); g.stroke(); }
+  } else {
+    const B = P(dimDraft.b);
+    mark(B);
+    const c = dimDraft.dc || dimDraft.hover;
+    if (c) {
+      const C = P(c);
+      const st = { pts: [dimDraft.a.u, dimDraft.a.v, dimDraft.b.u, dimDraft.b.v, c.u, c.v], mode: dimDraft.mode || dimMode(A, B, C) };
+      g.globalAlpha = dimDraft.dc ? 1 : 0.7;
+      drawDim(g, dimGeom(st, t), '', inkWidth('dim'));
+    }
+  }
+  g.restore();
+}
+function dimClick(p) {
+  if (!S.cur) return;
+  const q = toNorm(p.x, p.y);
+  if (!dimDraft || dimDraft.key !== S.cur.key) { dimDraft = { key: S.cur.key, a: q, b: null, hover: null }; banner('寸法：2点目を押してください（Esc でやめる）', 4000); drawInk(); return; }
+  if (!dimDraft.b) {
+    const t = xform();
+    if (Math.hypot((q.u - dimDraft.a.u) * t.W * t.s, (q.v - dimDraft.a.v) * t.H * t.s) < 4) return; // 同じ点
+    dimDraft.b = q; dimDraft.hover = null;
+    banner('寸法：寸法線を置きたいところを押してください', 4000);
+    drawInk();
+    return;
+  }
+  const t = xform();
+  const P = (r) => ({ x: t.ox + r.u * t.W * t.s, y: t.oy + r.v * t.H * t.s });
+  dimDraft.dc = q;
+  dimDraft.mode = dimMode(P(dimDraft.a), P(dimDraft.b), P(q));
+  banner(null);
+  drawInk();
+  openDimInput(p, null);
+}
+function cancelDim() {
+  if (dimEd) { dimEd.box.remove(); dimEd = null; }
+  if (dimDraft) { dimDraft = null; drawInk(); }
+}
+// 寸法の文字の入力（新しい寸法・書いた寸法の直し）
+function openDimInput(p, st) {
+  if (dimEd) { dimEd.box.remove(); dimEd = null; }
+  const box = document.createElement('div');
+  box.className = 'text-ed dim-ed';
+  const inp = document.createElement('input');
+  inp.className = 'text-input';
+  inp.maxLength = 60;
+  inp.enterKeyHint = 'done';
+  inp.placeholder = '寸法（例：25.0、φ10 H7）';
+  inp.setAttribute('aria-label', '寸法');
+  inp.value = st ? st.text : '';
+  inp.style.fontSize = '18px'; inp.style.width = '200px';
+  const bar = document.createElement('span');
+  bar.className = 'text-bar';
+  const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = '確定'; ok.className = 'primary';
+  const no = document.createElement('button'); no.type = 'button'; no.textContent = st ? '削除' : 'やめる';
+  bar.append(ok, no);
+  box.append(inp, bar);
+  box.style.left = clamp(p.x - 100, 0, Math.max(0, SW - 220)) + 'px';
+  box.style.top = clamp(p.y + 10, 0, Math.max(0, SH - 80)) + 'px';
+  el.stage.appendChild(box);
+  dimEd = { box, inp, st };
+  inp.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); commitDim(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelDim(); }
+  });
+  ok.addEventListener('click', () => commitDim());
+  no.addEventListener('click', () => { const old = dimEd && dimEd.st; cancelDim(); if (old) deleteStroke(old.id); });
+  inp.focus();
+  inp.select();
+}
+function commitDim() {
+  if (!dimEd) return;
+  const { box, inp, st } = dimEd;
+  dimEd = null;
+  box.remove();
+  const text = inp.value.trim().slice(0, 60);
+  if (st) {
+    if (S.strokeById.get(st.id) === st && st.text !== text) { S.myStack.push([st.key, st.id, { text: st.text }]); updateText(st, { text }); }
+    return;
+  }
+  const d = dimDraft;
+  dimDraft = null;
+  if (!d || !d.b || !d.dc || (S.strokes.get(d.key) || []).length >= MAX_STROKES) { drawInk(); return; }
+  const s = { id: rid(), tool: 'dim', color: S.color, w: 0.01, sw: inkWidth('dim'), mode: d.mode, text, pts: [d.a.u, d.a.v, d.b.u, d.b.v, d.dc.u, d.dc.v] };
+  addStroke(d.key, s);
+  S.myStack.push([d.key, s.id]);
+  send({ t: 'sb', key: d.key, s });
 }
 
 // 書き込んだ文字の位置と大きさ（描くときと、消しゴムで当たりを見るときに使う）
@@ -2610,6 +2825,7 @@ function clearStrokes(key, doSend = true) {
 }
 function undo() {
   commitText(true);
+  if (dimDraft || dimEd) { cancelDim(); return; } // 作りかけの寸法があれば、それをやめる
   while (S.myStack.length) {
     const [, id, prev] = S.myStack.pop();
     const st = S.strokeById.get(id);
@@ -2631,6 +2847,7 @@ function eraseAt(x, y) {
       if (x > b.x - 6 && x < b.x + b.w + 6 && y > b.y - 6 && y < b.y + b.h + 6) { deleteStroke(st.id); return; }
       continue;
     }
+    if (st.tool === 'dim') { if (dimHit(st, x, y)) { deleteStroke(st.id); return; } continue; }
     const tol = Math.max(8, (st.sw || st.w * sx) / 2 + 4);
     for (let j = 0; j < p.length; j += 2) {
       const ax = t.ox + p[j] * sx, ay = t.oy + p[j + 1] * sy;
@@ -2696,6 +2913,7 @@ function sendPointer(u, v) {
 
 el.ptr.addEventListener('pointerdown', (e) => {
   if (textEd && touches.size === 0) commitText(); // 入力中の文字は、図面の別のところを押したら確定
+  if (dimEd && touches.size === 0) commitDim();
   el.ptr.setPointerCapture(e.pointerId);
   const p = localPos(e);
   touches.set(e.pointerId, p);
@@ -2726,6 +2944,11 @@ el.ptr.addEventListener('pointerdown', (e) => {
   } else if (tool === 'laser') {
     gesture = { type: 'laser' };
     moveLaser(p);
+  } else if (tool === 'dim') {
+    // 書いた寸法を押す → 文字を直す（寸法線をドラッグすると位置を動かす）。何もないところ → 寸法を作る
+    const hit = !dimDraft ? dimAt(p.x, p.y) : null;
+    gesture = { type: 'dim', p, hit, c0: hit && hit.st.pts.slice(4, 6), moved: false, sent: 0 };
+    if (dimDraft) { dimDraft.hover = toNorm(p.x, p.y); drawInk(); }
   } else if (tool === 'text') {
     // 書いた文字を押す → 選んで直す（ドラッグなら移動）。何もないところ → 新しく書く
     // 指・ペンを離したところで入力欄を出す（スマホでキーボードが出るように）
@@ -2777,6 +3000,23 @@ el.ptr.addEventListener('pointermove', (e) => {
     return;
   }
   if (!gesture && S.tool === 'text') el.ptr.style.cursor = textAt(p.x, p.y) ? 'move' : '';
+  if (gesture && gesture.type === 'dim') {
+    if (gesture.hit) {
+      if (!gesture.moved && Math.hypot(p.x - gesture.p.x, p.y - gesture.p.y) < 5) return;
+      gesture.moved = true;
+      const t = xform();
+      const st = gesture.hit.st;
+      st.pts[4] = gesture.c0[0] + (p.x - gesture.p.x) / (t.W * t.s);
+      st.pts[5] = gesture.c0[1] + (p.y - gesture.p.y) / (t.H * t.s);
+      drawInk();
+      if (performance.now() - gesture.sent > 60) { gesture.sent = performance.now(); updateText(st, {}); }
+    } else if (dimDraft) { dimDraft.hover = toNorm(p.x, p.y); drawInk(); }
+    return;
+  }
+  if (!gesture && S.tool === 'dim') {
+    if (dimDraft && e.pointerType === 'mouse') { dimDraft.hover = toNorm(p.x, p.y); drawInk(); }
+    else el.ptr.style.cursor = !dimDraft && dimAt(p.x, p.y) ? 'pointer' : '';
+  }
   // ポインターはマウスを動かすだけで表示（タッチは触れている間）
   if (S.tool === 'laser' && (e.pointerType === 'mouse' || (gesture && gesture.type === 'laser'))) moveLaser(p);
 });
@@ -2915,6 +3155,12 @@ function endPointer(e) {
   touches.delete(e.pointerId);
   if (!gesture) return;
   if (gesture.type === 'stroke') finishStroke();
+  else if (gesture.type === 'dim') {
+    const g = gesture;
+    gesture = null;
+    if (g.hit && g.moved) { updateText(g.hit.st, {}); S.myStack.push([g.hit.st.key, g.hit.st.id, { pts: [...g.hit.st.pts.slice(0, 4), ...g.c0] }]); }
+    else if (e.type === 'pointerup') { if (g.hit) openDimInput(localPos(e), g.hit.st); else dimClick(localPos(e)); }
+  }
   else if (gesture.type === 'text') {
     const g = gesture;
     gesture = null;
@@ -3315,6 +3561,8 @@ function setTool(t) {
   if (t === 'hl' && S.color === '#222222') setColor(COLORS[0]); // 黒の蛍光ペンは見えにくい
   if (t === 'text' && S.color === COLORS[0]) setColor('#e53935'); // 黄色の文字は白い図面で読めない
   if (t !== 'text') commitText();
+  if (t !== 'dim') cancelDim();
+  if (t === 'dim' && S.color === COLORS[0]) setColor('#e53935');
   renderWidths();
 }
 // 太さ（文字は大きさ）の選びボタン：いま選んでいる道具のものを出す
@@ -3323,14 +3571,14 @@ function renderWidths() {
   if (!box) return;
   const tool = INK_WIDTHS[S.tool] ? S.tool : 'pen';
   box.innerHTML = '';
-  box.setAttribute('aria-label', tool === 'text' ? '文字の大きさ' : '線の太さ');
+  box.setAttribute('aria-label', tool === 'text' || tool === 'dim' ? '文字の大きさ' : '線の太さ');
   INK_WIDTHS[tool].forEach((w, i) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'wbtn' + (i === (S.inkW[tool] | 0) ? ' on' : '');
-    b.title = `${tool === 'text' ? '文字の大きさ' : tool === 'hl' ? '蛍光ペンの太さ' : 'ペンの太さ'}：${INK_WIDTH_NAMES[tool][i]}`;
+    b.title = `${tool === 'text' ? '文字の大きさ' : tool === 'dim' ? '寸法の文字の大きさ' : tool === 'hl' ? '蛍光ペンの太さ' : 'ペンの太さ'}：${INK_WIDTH_NAMES[tool][i]}`;
     const dot = document.createElement('i');
-    if (tool === 'text') { dot.className = 'wtext'; dot.textContent = 'あ'; dot.style.fontSize = Math.round(10 + i * 4) + 'px'; }
+    if (tool === 'text' || tool === 'dim') { dot.className = 'wtext'; dot.textContent = 'あ'; dot.style.fontSize = Math.round(10 + i * 4) + 'px'; }
     else { const d = Math.min(24, Math.max(3, Math.round(tool === 'hl' ? w / 2 : w * 1.6))); dot.style.width = dot.style.height = d + 'px'; if (tool === 'hl') dot.className = 'hl'; }
     b.appendChild(dot);
     b.addEventListener('click', () => {
@@ -3338,6 +3586,7 @@ function renderWidths() {
       store.set('inkW', S.inkW);
       if (S.tool !== tool) setTool(tool); else renderWidths();
       if (textEd && tool === 'text') { textEd.size = inkWidth('text'); textEd.fit(); textEd.ta.focus(); }
+      if (dimEd && dimEd.st && tool === 'dim') { S.myStack.push([dimEd.st.key, dimEd.st.id, { sw: dimEd.st.sw }]); updateText(dimEd.st, { sw: inkWidth('dim') }); dimEd.inp.focus(); }
     });
     box.appendChild(b);
   });
@@ -3345,6 +3594,7 @@ function renderWidths() {
 function setColor(c) {
   S.color = c;
   if (textEd) { textEd.color = c; textEd.fit(); }
+  if (dimEd && dimEd.st && dimEd.st.color !== c) { S.myStack.push([dimEd.st.key, dimEd.st.id, { color: dimEd.st.color }]); updateText(dimEd.st, { color: c }); }
   $$('.swatch').forEach((b) => b.classList.toggle('on', b.dataset.color === c));
 }
 function updateToolbar() {
@@ -3568,7 +3818,7 @@ function setupToolbar() {
     b.dataset.color = c;
     b.style.background = c;
     b.title = '色';
-    b.addEventListener('click', () => { setColor(c); if (S.tool !== 'hl' && S.tool !== 'pen' && S.tool !== 'text') setTool('pen'); if (textEd) textEd.ta.focus(); });
+    b.addEventListener('click', () => { setColor(c); if (!INK_WIDTHS[S.tool]) setTool('pen'); if (textEd) textEd.ta.focus(); });
     sw.appendChild(b);
   }
   setColor(S.color);
@@ -3718,6 +3968,8 @@ function setupToolbar() {
     else if (k === 'p' || k === 'P') setTool('pen');
     else if (k === 'e' || k === 'E') setTool('eraser');
     else if (k === 't' || k === 'T') setTool('text');
+    else if (k === 'd' || k === 'D') setTool('dim');
+    else if (k === 'Escape' && dimDraft) cancelDim();
     else if (k === 'm' || k === 'M') setTool('hand');
     else if (k === 'f' || k === 'F') setFullscreen(!el.room.classList.contains('full'));
     else if (k === 'Escape' && el.room.classList.contains('full')) setFullscreen(false);
