@@ -405,8 +405,11 @@
       <ul id="partyMembers" class="party-list members"></ul>
     </div>
     <p id="partyLinkHint" class="hint"></p>
+    <div id="partyLinkRow" hidden>
+      <div class="meet-link"><input id="partyLink" readonly aria-label="招待リンク" onclick="this.select()"><button id="partyCopyBtn" class="primary" type="button">リンクをコピー</button></div>
+      <div class="row"><button id="partyMailBtn" class="ghost" type="button">メールで送る</button></div>
+    </div>
     <div class="row end">
-      <button id="partyCopyBtn" class="ghost" type="button" hidden>招待リンクをコピー</button>
       <button class="primary" value="ok">閉じる</button>
     </div>
   </form>

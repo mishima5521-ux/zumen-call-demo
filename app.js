@@ -4252,11 +4252,12 @@ function renderPartyDlg() {
     }
   }
   const hint = $('#partyLinkHint');
-  const copy = $('#partyCopyBtn');
-  copy.hidden = true;
+  const linkRow = $('#partyLinkRow');
+  linkRow.hidden = true;
   if (S.role === 'host' && S.meeting) {
-    hint.textContent = `社外の方は、招待リンク（${S.meeting.label || '招待リンク'}）から申し込むと、画面の上の「入室待ち」に名前が出ます。「許可」を押すと参加します。`;
-    copy.hidden = false;
+    hint.textContent = `社外の方は、この招待リンク（${S.meeting.label || '招待リンク'}）から申し込むと、画面の上の「入室待ち」に名前が出ます。「許可」を押すと参加します。`;
+    $('#partyLink').value = meetLink(S.meeting);
+    linkRow.hidden = false;
   } else if (S.role === 'host' && !GUEST_MODE) {
     hint.textContent = '社外の方を入れるときは、待受画面の「社外の方との打ち合わせ」で招待リンクを作って送ってください（打ち合わせ中に作ることはできません）。';
   } else {
@@ -4798,15 +4799,36 @@ function setupTheme() {
   sel.addEventListener('change', (e) => chooseTheme(e.target.value));
 }
 
+// 招待リンクをコピーする。押したボタンに「コピーしました」と出す（開いている画面の後ろにお知らせが隠れないように）。
+//   自動でコピーできないブラウザでは、リンクの欄を選んだ状態にして「Ctrl+C でコピー」と案内する
+async function copyLink(text, input, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch { /* 下の方法で */ }
+  if (!ok && input) {
+    try { input.focus(); input.select(); ok = document.execCommand('copy'); } catch { ok = false; }
+  }
+  if (btn) {
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    btn.textContent = ok ? 'コピーしました ✓' : '欄を選んだので Ctrl+C でコピー';
+    clearTimeout(btn._t);
+    btn._t = setTimeout(() => { btn.textContent = btn.dataset.label; }, 3000);
+  }
+  if (!ok && input) { input.focus(); input.select(); }
+  return ok;
+}
+function mailMeeting() {
+  const mt = S.meeting;
+  if (!mt) return;
+  const subject = 'オンライン打ち合わせのご案内';
+  const body = `${mt.hostName}です。\n下記のリンクから、オンライン打ち合わせにご参加ください。\n\n${meetLink(mt)}\n\n・パソコンは Chrome か Edge、スマートフォンはそのままのブラウザで開いてください（インストール・登録は不要です）。\n・LINE などのアプリの中で開いてうまく映らないときは、メニューの「ブラウザで開く」を選んでください。\n・お名前を入れて「入室する」を押すと、こちらで確認のうえ打ち合わせを始めます。\n`;
+  location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 function setupMeet() {
   $('#meetCreateBtn').addEventListener('click', createMeeting);
   $('#meetRoomBtn').addEventListener('click', (e) => snipe(e, e.currentTarget, openRoom));
-  $('#roomCopyBtn').addEventListener('click', async () => {
-    const link = $('#roomLink').value;
-    try { await navigator.clipboard.writeText(link); banner('招待リンクをコピーしました。メールやチャットに貼り付けて相手に送ってください', 5000); }
-    catch { $('#roomLink').select(); document.execCommand('copy'); banner('招待リンクをコピーしました', 4000); }
-  });
-  $('#roomMailBtn').addEventListener('click', () => $('#meetMailBtn').click());
+  $('#roomCopyBtn').addEventListener('click', (e) => copyLink($('#roomLink').value, $('#roomLink'), e.currentTarget));
+  $('#roomMailBtn').addEventListener('click', mailMeeting);
   $('#roomCloseBtn').addEventListener('click', () => $('#leaveBtn').click());
   $('#roomKeepBtn').addEventListener('click', () => { if (S.room) S.room.emptied = false; updateRoomCard(); armRoomIdle(); });
   $('#roomClearBtn').addEventListener('click', async () => {
@@ -4819,18 +4841,10 @@ function setupMeet() {
   $('#meetEndBtn').addEventListener('click', async () => {
     if (await askConfirm('このリンクの受付をやめますか？（相手はこのリンクから申し込めなくなります。「前に作ったリンク」から、いつでも再開できます）', '受付をやめる')) stopMeeting();
   });
-  $('#meetCopyBtn').addEventListener('click', async () => {
-    const link = $('#meetLink').value;
-    try { await navigator.clipboard.writeText(link); lobbyMsg('招待リンクをコピーしました。メールやチャットに貼り付けて相手に送ってください'); }
-    catch { $('#meetLink').select(); document.execCommand('copy'); lobbyMsg('招待リンクをコピーしました'); }
+  $('#meetCopyBtn').addEventListener('click', async (e) => {
+    if (await copyLink($('#meetLink').value, $('#meetLink'), e.currentTarget)) lobbyMsg('招待リンクをコピーしました。メールやチャットに貼り付けて相手に送ってください');
   });
-  $('#meetMailBtn').addEventListener('click', () => {
-    const mt = S.meeting;
-    if (!mt) return;
-    const subject = 'オンライン打ち合わせのご案内';
-    const body = `${mt.hostName}です。\n下記のリンクから、オンライン打ち合わせにご参加ください。\n\n${meetLink(mt)}\n\n・パソコンは Chrome か Edge、スマートフォンはそのままのブラウザで開いてください（インストール・登録は不要です）。\n・LINE などのアプリの中で開いてうまく映らないときは、メニューの「ブラウザで開く」を選んでください。\n・お名前を入れて「入室する」を押すと、こちらで確認のうえ打ち合わせを始めます。\n`;
-    location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  });
+  $('#meetMailBtn').addEventListener('click', mailMeeting);
   $('#meetShareBtn').hidden = !navigator.share;
   $('#meetShareBtn').addEventListener('click', () => {
     const mt = S.meeting;
@@ -4909,7 +4923,8 @@ async function init() {
   setInterval(meshCheck, 5000);
   setInterval(checkWaiting, 4000);
   $('#tilesHideBtn').addEventListener('click', () => { $('#peerTiles').dataset.closed = '1'; partyMedia(); });
-  $('#partyCopyBtn').addEventListener('click', async () => { const mt = S.meeting; if (!mt) return; try { await navigator.clipboard.writeText(meetLink(mt)); banner('招待リンクをコピーしました', 3000); } catch { banner(meetLink(mt), 10_000); } });
+  $('#partyCopyBtn').addEventListener('click', (e) => { if (S.meeting) copyLink(meetLink(S.meeting), $('#partyLink'), e.currentTarget); });
+  $('#partyMailBtn').addEventListener('click', mailMeeting);
   audioCtx(); // 起動オプションで自動再生が許可されていれば、この時点で着信音が使える
   setInterval(updateBellHint, 1000);
   if (!navigator.mediaDevices || !window.RTCPeerConnection) {
