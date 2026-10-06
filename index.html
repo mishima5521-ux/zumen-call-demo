@@ -25,6 +25,33 @@
       <div class="bell-wrap"><span id="bellHint" class="bell"></span><button id="alertBtn" class="ghost small" type="button">着信の知らせ方</button><button id="historyBtn" class="ghost small" type="button">議事録の履歴</button></div>
     </header>
 
+    <!-- 社外の方との打ち合わせ（招待リンク） -->
+    <section id="meetBox" class="meet" hidden>
+      <h2>社外の方との打ち合わせ</h2>
+      <div id="meetIdle">
+        <p class="hint">招待リンクを作って、メールなどで相手に送ります。相手はリンクを開いて名前を入れるだけで参加できます（インストール・登録は不要）。入室はこちらで許可したときだけです。</p>
+        <div class="meet-form">
+          <label class="field"><span>こちらの表示名（相手の画面に出ます）</span><input id="meetHostName" maxlength="40" placeholder="例：○○製作所 山田" autocomplete="off"></label>
+          <label class="field"><span>相手先のメモ（自分用。相手には出ません）</span><input id="meetLabel" maxlength="40" placeholder="例：△△工業 佐藤様" autocomplete="off"></label>
+        </div>
+        <button id="meetCreateBtn" class="primary big" type="button">招待リンクを作る</button>
+        <div id="meetRecentWrap" hidden>
+          <h3>前に作ったリンク（同じ相手と続けて打ち合わせるとき）</h3>
+          <ul id="meetRecent" class="meet-recent"></ul>
+        </div>
+      </div>
+      <div id="meetActive" hidden>
+        <p class="meet-head"><b id="meetActiveLabel"></b> <span id="meetState" class="meet-state">準備中…</span></p>
+        <div class="meet-link"><input id="meetLink" readonly aria-label="招待リンク" onclick="this.select()"><button id="meetCopyBtn" class="primary" type="button">リンクをコピー</button></div>
+        <div class="row wrap">
+          <button id="meetMailBtn" class="ghost" type="button">メールで送る</button>
+          <button id="meetShareBtn" class="ghost" type="button">ほかのアプリで送る</button>
+          <button id="meetEndBtn" class="ghost" type="button">待機をやめる</button>
+        </div>
+        <p class="hint">この画面を開いている間、相手はリンクから入室を申し込めます。申し込みがあると呼び出し音が鳴るので、名前を確かめて「入室を許可」を押してください。</p>
+      </div>
+    </section>
+
     <div id="setupBox" hidden>
       <h2>このPCはどこで使いますか？</h2>
       <p class="hint">選んだ名前で相手の一覧に表示されます。あとから「変更」で選び直せます。</p>
@@ -53,6 +80,45 @@
 
     <p id="lobbyMsg" class="msg" role="status"></p>
     <p class="hint">この画面を開いたまま（最小化してもかまいません）にしておくと、相手からの呼び出しを受けられます。×で閉じると呼び出しを受けられません。</p>
+  </div>
+</section>
+
+<!-- ===== 社外の方の入室画面（招待リンクから開いたとき） ===== -->
+<section id="guest" hidden>
+  <div class="guest-card">
+    <h1>オンライン打ち合わせ</h1>
+    <p id="guestHostLine" class="guest-host"></p>
+    <div class="guest-grid">
+      <div class="guest-side">
+        <div class="lobby-preview">
+          <video id="guestVideo" muted autoplay playsinline></video>
+          <div id="guestNoCam" class="nocam">
+            <span>カメラの映り方を確認できます</span>
+            <button id="guestCamBtn" type="button" class="ghost">カメラを確認</button>
+          </div>
+        </div>
+        <label class="field"><span>カメラ</span><select id="guestCam"></select></label>
+        <label class="field"><span>マイク</span><select id="guestMic"></select></label>
+      </div>
+      <form id="guestForm" class="guest-form" novalidate>
+        <label class="field"><span>お名前（必須）</span><input id="guestName" maxlength="30" autocomplete="name" placeholder="例：佐藤"></label>
+        <label class="field"><span>会社名</span><input id="guestCompany" maxlength="40" autocomplete="organization" placeholder="例：△△工業"></label>
+        <button id="guestJoinBtn" class="primary big" type="submit">入室する</button>
+        <button id="guestCancelBtn" class="ghost big" type="button" hidden>申し込みをやめる</button>
+        <p id="guestMsg" class="msg" role="status" aria-live="polite"></p>
+      </form>
+    </div>
+    <details class="guest-notes">
+      <summary>はじめての方へ・データの扱い</summary>
+      <ul>
+        <li>インストールや会員登録は不要です。パソコンは Chrome か Edge、スマートフォンはそのままのブラウザで使えます。</li>
+        <li>「入室する」を押すと、カメラとマイクの使用許可を求められます。「許可」を押してください。</li>
+        <li>相手が入室を許可すると、打ち合わせが始まります。</li>
+        <li>映像・音声・図面は、相手と直接、暗号化してやり取りします。接続の最初の段階だけ、接続を仲介するサーバーを使います。録画・録音はしていません。</li>
+        <li>LINE などのアプリの中で開いてカメラが映らないときは、メニューの「ブラウザで開く」（Safari・Chrome で開く）を選んでください。</li>
+        <li>会社のネットワークでつながらないときは、スマートフォンの回線（テザリング）など別の回線でお試しください。</li>
+      </ul>
+    </details>
   </div>
 </section>
 

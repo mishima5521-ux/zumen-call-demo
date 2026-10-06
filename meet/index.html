@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>図面テレビ電話（2台デモ）</title>
+<title>図面テレビ電話</title>
+<meta name="robots" content="noindex, nofollow">
 <!-- 筆文字・明朝の書体（ネットにつながらないときは PC の明朝体で表示） -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -326,16 +327,7 @@
 <audio id="remoteAudio" autoplay></audio>
 <input type="file" id="fileInput" accept=".pdf,application/pdf,image/*" hidden>
 
-<script>
-// 2台デモ用の設定（本番とは別の合言葉。本番の相手とはつながりません）
-window.ZUMEN_CONFIG = {
-  companyKey: 'demo52qram5ylx',
-  members: [
-    { id: 'office', name: '事務所' },
-    { id: 'site1', name: '現場1' },
-  ],
-};
-</script>
+<script>window.ZUMEN_CONFIG = { hosted: true }; // Web 版：社外の方との打ち合わせ専用（社内の合言葉は持たない）</script>
 <script src="vendor/peerjs.min.js"></script>
 <script src="vendor/pdf.min.js"></script>
 <script src="app.js"></script>
