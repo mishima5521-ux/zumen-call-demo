@@ -1009,7 +1009,7 @@ function showCallOverlay(kind, name, { keepDialogs = false } = {}) {
   $('#callName').textContent = m ? m[1] : name;
   $('#callAvatar').textContent = markOf(name);
   $('.call-keys').textContent = kind === 'knock' ? 'キーボード：Enter＝入室を許可　Esc＝お断り' : 'キーボード：Enter＝出る　Esc＝折り返します';
-  $('#callKanji').textContent = kind === 'knock' ? '来客' : kind === 'incoming' ? '着信' : GUEST_MODE ? '入室' : '発信';
+  $('#callKanji').textContent = ringing ? '着信' : GUEST_MODE ? '入室' : '発信';
   $('#callStatus').textContent = kind === 'knock' ? `${m ? m[2] + '　' : ''}招待リンクから入室を希望しています`
     : kind === 'incoming' ? 'から着信しています'
     : GUEST_MODE ? 'に入室を申し込んでいます。相手が許可すると始まります…' : 'を呼び出しています…';
