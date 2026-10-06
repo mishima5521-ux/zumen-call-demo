@@ -1456,7 +1456,7 @@ function startTr(announce = true) {
   if (S.tr.on || !S.inCall) return;
   if (!SR) {
     banner('このブラウザは文字起こしに対応していません（Chrome・Edge・Safari で使えます）', 8000);
-    if (announce) send({ t: 'msg', text: `${S.name} の端末は文字起こしに対応していないため、${S.name} の発言は記録されません` });
+    send({ t: 'tr-na' });
     return;
   }
   S.tr.on = true;
@@ -1487,9 +1487,11 @@ function runRecog() {
     if (interim) showCaption('me', S.name, interim);
   };
   r.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      stopTr(true);
-      banner('文字起こしを使えません（マイクの許可とネット接続を確認してください）', 8000);
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
+      // この端末だけ止める（ほかの人の文字起こしは止めない）。相手には「この端末では使えない」と知らせる
+      stopTr(false);
+      banner('この端末では文字起こしを使えません（マイクの使用が許可されているか、ネット接続を確認してください）。ほかの人の文字起こしは続きます', 8000);
+      send({ t: 'tr-na' });
     }
   };
   // 無音が続くと止まるので、オンの間は自動で再開する
@@ -1785,7 +1787,7 @@ function setupMinutes() {
 // 受信メッセージ
 // ===================================================================
 // 届いたデータ：まとめ役は、ほかの参加者にも配る（送った人の番号を付けて）
-const RELAY = new Set(['content', 'view', 'ptr', 'ptr-off', 'sb', 'sp', 'del', 'clear', 'doc-close', 'share', 'msg', 'tr', 'tr-state', 'chat', 'pv']);
+const RELAY = new Set(['content', 'view', 'ptr', 'ptr-off', 'sb', 'sp', 'del', 'clear', 'doc-close', 'share', 'msg', 'tr', 'tr-state', 'tr-na', 'chat', 'pv']);
 function linkAlive(c) { return !!c && (c === S.conn || !!extraByConn(c)); }
 function onLinkData(c, m) {
   if (!m || typeof m !== 'object' || !linkAlive(c)) return; // 古い接続から遅れて届いたデータは捨てる
@@ -1884,6 +1886,7 @@ function onMessage(m, c = S.conn) {
       break;
     }
     case 'tr': if (m.line && typeof m.line.text === 'string') addTrLine(isGroup() && from ? from : 'them', fromName, { id: String(m.line.id).slice(0, 64), ts: finite(m.line.ts) ? m.line.ts : Date.now(), text: m.line.text.slice(0, 2000) }); break;
+    case 'tr-na': banner(`${fromName} の端末では文字起こしを使えません（${fromName} の発言は字幕・記録に残りません）。ほかの人の文字起こしは続きます`, 8000); break;
     case 'tr-state':
       if (m.on && !S.tr.on) { startTr(false); banner(`${fromName} が文字起こしを開始しました。話した内容が${TR_USE}`, 6000); }
       else if (!m.on && S.tr.on) { stopTr(false); banner(`${fromName} が文字起こしを止めました`, 4000); }
