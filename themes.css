@@ -192,6 +192,7 @@
 [data-theme="mirror"] .tool { border: 1px solid #5a5f66; background: linear-gradient(180deg, #f2f4f7, #c9cdd3); color: #111; font-weight: 900; }
 [data-theme="mirror"] .tool.on, [data-theme="mirror"] #trBtn.on, [data-theme="mirror"] #shareBtn.on { background: var(--gold-grad); border-color: #1a1200; color: #1a1200; }
 [data-theme="mirror"] #openBtn, [data-theme="mirror"] #liveRemoteBtn:not(.on), [data-theme="mirror"] #fullBtn { background: transparent; border-color: #d4af37; color: #f7e08a; }
+[data-theme="mirror"] #fullBtn { background: var(--gold-grad); border-color: #1a1200; color: #1a1200; }
 [data-theme="mirror"] .grp { border-right-color: #3a3d42; }
 [data-theme="mirror"] .page { color: #c9cdd3; }
 [data-theme="mirror"] .swatch.on { border-color: #fff; box-shadow: 0 0 0 2px #d4af37; }
@@ -323,6 +324,7 @@
 @media (prefers-reduced-motion: reduce) { [data-theme="comic"] .call-avatar { animation: none !important; } }
 @media (max-width: 720px) {
   [data-theme="comic"] .call-kanji { font-size: 50px; }
+  [data-theme="comic"] .tbtn { padding: 4px 6px; border-width: 2px; }
   [data-theme="comic"] .call-avatar { width: 140px; height: 140px; font-size: 34px; }
 }
 @media (max-height: 640px) {

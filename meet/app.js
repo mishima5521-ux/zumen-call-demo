@@ -717,6 +717,7 @@ function enterCall() {
   S.extChat = [];
   $('#leaveBtn').textContent = GUEST_MODE ? '退室する' : '通話を終了';
   $('#saveBtn').classList.toggle('guest-hide', GUEST_MODE); // 社外の方には「保存」を出さない
+  $('#recordBtn').classList.toggle('guest-hide', GUEST_MODE);
   buildQuick();
   el.lobby.hidden = true;
   el.room.hidden = false;
@@ -736,6 +737,7 @@ function hangup(msg, notifyPeer = true) {
   if (notifyPeer) send({ t: 'bye' });
   stopTr(false);
   const minutesInput = collectMinutesInput();
+  const record = GUEST_MODE ? null : snapshotRecord(); // 図面を片付ける前に、保存用に取っておく
   S.inCall = false;
   const conn = S.conn, call = S.call;
   S.conn = null; S.call = null;
@@ -771,6 +773,7 @@ function hangup(msg, notifyPeer = true) {
   probeAll(true);
   // 文字起こしかチャットがあれば、議事録を作る
   if (MINUTES_ON && (minutesInput.lines.length || minutesInput.chats.length)) openMinutes(minutesInput);
+  else if (recordHasContent(record)) askSaveRecord(record);
 }
 
 function bindConn(c) {
@@ -986,7 +989,22 @@ function soundReady() { return !!AC && AC.state === 'running'; }
 function unlockSound() {
   const ac = audioCtx();
   if (ac && ac.state !== 'running') ac.resume().then(updateBellHint).catch(() => {});
-  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {}); } catch { /* 未対応 */ }
+  // 通知（最小化中の着信をデスクトップに出す）の許可は、このPCで最初の1回だけ聞く。あとは「着信の知らせ方」から
+  if (!GUEST_MODE && !DEMO && !store.get('notifyAsked', false)) { store.set('notifyAsked', true); askNotify(); }
+}
+function askNotify() {
+  try { if ('Notification' in window && Notification.permission === 'default') return Notification.requestPermission().catch(() => {}); } catch { /* 未対応 */ }
+  return Promise.resolve();
+}
+function updateNotifyRow() {
+  const row = $('#notifyRow');
+  if (!row) return;
+  const st = 'Notification' in window ? Notification.permission : 'none';
+  row.hidden = st === 'none' || st === 'granted';
+  $('#notifyText').textContent = st === 'denied'
+    ? 'デスクトップ通知はブロックされています。使うときは、アドレス欄の左のマークから「通知」を「許可」にしてください。'
+    : '画面を最小化していても、着信をデスクトップの通知でお知らせできます。';
+  $('#notifyBtn').hidden = st !== 'default';
 }
 function updateBellHint() {
   const h = $('#bellHint');
@@ -2614,6 +2632,140 @@ async function saveImage() {
 }
 
 // ===================================================================
+// 打ち合わせの記録を保存（1つの ZIP にまとめる）
+//   文字起こし・チャット.txt … 日時・参加者・使った資料・発言（文字起こし）・チャット
+//   資料/      … 開いた図面・資料・撮った写真の元のファイル
+//   書き込み/  … 書き込みのあるページを、書き込み付きの画像（PNG）にしたもの
+// ===================================================================
+let lastRecord = null; // 通話を終えたあと、保存するかを聞く間だけ持っておく
+function snapshotRecord() {
+  const inp = collectMinutesInput();
+  const ext = S.external ? S.extChat.filter((e) => e.from !== 'sys').map((e) => ({ ts: e.ts, name: e.from === 'me' ? myCallName() : S.remoteName, text: e.text })) : [];
+  return {
+    ...inp, me: myCallName(), chats: [...inp.chats, ...ext].sort((a, b) => a.ts - b.ts),
+    docs: [...S.docs.values()].map((d) => ({ id: d.id, kind: d.kind, name: d.name, mime: d.mime, blob: d.blob, pages: d.pages })),
+    strokes: [...S.strokes.entries()].filter(([, l]) => l && l.length).map(([k, l]) => [k, l.map((st) => ({ ...st, pts: st.pts.slice() }))]),
+  };
+}
+const recordHasContent = (r) => !!r && (r.docs.length || r.lines.length || r.chats.length);
+function recordText(r) {
+  const t = (ts) => new Date(ts).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  const mins = Math.max(1, Math.round((r.end - r.start) / 60000));
+  const out = [
+    '打ち合わせの記録（図面テレビ電話）',
+    `日時：${fmtDate(r.start)} ${hhmm(r.start)}〜${hhmm(r.end)}（約${mins}分）`,
+    `参加者：${r.me}、${r.partner}`,
+    `資料・写真：${r.docs.length ? r.docs.map((d) => d.name).join('、') : 'なし'}`,
+    '', '■ 文字起こし',
+  ];
+  if (r.lines.length) for (const l of r.lines) out.push(`[${t(l.ts)}] ${l.name}：${l.text}`);
+  else out.push('（文字起こしはしていません）');
+  out.push('', '■ チャット');
+  if (r.chats.length) for (const c of r.chats) out.push(`[${t(c.ts)}] ${c.name}：${c.text}`);
+  else out.push('（なし）');
+  return out.join('\r\n') + '\r\n';
+}
+// ZIP（無圧縮）を作る。ファイル名は UTF-8（Windows のエクスプローラーで日本語のまま開ける）
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xffffffff; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function makeZip(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = f.data, crc = crc32(data);
+    const head = (sig, extra) => { const b = new DataView(new ArrayBuffer(extra)); b.setUint32(0, sig, true); return b; };
+    const lh = head(0x04034b50, 30);
+    lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true); lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh, name, data);
+    const ch = head(0x02014b50, 46);
+    ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true); ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((n, x) => n + x.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: 'application/zip' });
+}
+const safeName = (n) => String(n).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 80) || '資料';
+async function saveRecord(r) {
+  if (!recordHasContent(r)) { banner('保存する記録（資料・書き込み・文字起こし）がありません', 4000); return false; }
+  const files = [], used = new Set();
+  const add = (name, data) => {
+    let n = name, i = 2;
+    while (used.has(n)) n = name.replace(/(\.[^./]+)?$/, (ext) => `(${i++})${ext}`);
+    used.add(n); files.push({ name: n, data });
+  };
+  add('文字起こし・チャット.txt', new TextEncoder().encode('\ufeff' + recordText(r)));
+  const strokes = new Map(r.strokes);
+  try {
+    let done = 0;
+    for (const d of r.docs) {
+      progress(`記録を作成中… ${d.name}`, done++ / Math.max(1, r.docs.length));
+      add(`資料/${safeName(d.name)}`, new Uint8Array(await d.blob.arrayBuffer()));
+      const pages = [...strokes.keys()].filter((k) => k.startsWith(d.id + ':')).map((k) => Number(k.slice(d.id.length + 1))).filter((n) => n >= 1).sort((a, b) => a - b);
+      if (!pages.length) continue;
+      const base = safeName(d.name.replace(/\.[^.]+$/, ''));
+      let pdf = null, img = null;
+      if (d.kind === 'pdf') pdf = await (await ensurePdfjs()).getDocument({ data: new Uint8Array(await d.blob.arrayBuffer()), isEvalSupported: false }).promise;
+      else img = await createImageBitmap(d.blob);
+      try {
+        for (const n of pages) {
+          let W, H, k, drawBg;
+          if (pdf) {
+            const pg = await pdf.getPage(clamp(n, 1, pdf.numPages));
+            const vp = pg.getViewport({ scale: 1 });
+            W = vp.width; H = vp.height; k = 3000 / Math.max(W, H);
+            drawBg = (g) => pg.render({ canvasContext: g, viewport: pg.getViewport({ scale: k }) }).promise;
+          } else {
+            W = img.width; H = img.height; k = 1;
+            drawBg = (g) => g.drawImage(img, 0, 0);
+          }
+          const c = document.createElement('canvas');
+          c.width = Math.round(W * k); c.height = Math.round(H * k);
+          const g = c.getContext('2d');
+          g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+          await drawBg(g);
+          const ink = document.createElement('canvas');
+          ink.width = c.width; ink.height = c.height;
+          drawStrokes(ink.getContext('2d'), strokes.get(`${d.id}:${n}`), { s: k, ox: 0, oy: 0, W, H });
+          g.globalCompositeOperation = 'multiply';
+          g.drawImage(ink, 0, 0);
+          const png = await new Promise((res) => c.toBlob(res, 'image/png'));
+          add(`書き込み/${base}${pdf ? `_p${n}` : ''}_書き込み.png`, new Uint8Array(await png.arrayBuffer()));
+        }
+      } finally { try { pdf && pdf.destroy(); img && img.close && img.close(); } catch { /* 解放済み */ } }
+    }
+  } catch (e) {
+    console.error(e);
+    progress(null);
+    banner('記録の一部を作れませんでした', 6000);
+  }
+  progress(null);
+  const dt = new Date(r.start);
+  const stamp = `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}${String(dt.getDate()).padStart(2, '0')}-${String(dt.getHours()).padStart(2, '0')}${String(dt.getMinutes()).padStart(2, '0')}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(makeZip(files));
+  a.download = `打ち合わせ記録_${stamp}_${safeName(r.partner)}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+  return true;
+}
+// 通話を終えたら、記録を保存するか聞く
+function askSaveRecord(r) {
+  lastRecord = r;
+  const n = r.docs.length, ink = r.strokes.filter(([k]) => !k.startsWith('live:')).length;
+  $('#recordSummary').textContent = `資料・写真 ${n} 件、書き込みのあるページ ${ink} 枚、文字起こし ${r.lines.length} 件、チャット ${r.chats.length} 件`;
+  $('#recordDlg').showModal();
+}
+
+// ===================================================================
 // 受信・送信画質の表示
 // ===================================================================
 const prevStats = { inBytes: 0, inTs: 0 };
@@ -2923,6 +3075,13 @@ function setupToolbar() {
     updateWipes();
   });
   $('#saveBtn').addEventListener('click', saveImage);
+  $('#recordBtn').addEventListener('click', () => saveRecord(snapshotRecord()));
+  $('#recordSaveBtn').addEventListener('click', async () => {
+    const r = lastRecord;
+    $('#recordDlg').close();
+    if (r && await saveRecord(r)) lobbyMsg('打ち合わせの記録を保存しました（ダウンロードのフォルダに入っています）');
+  });
+  $('#recordDlg').addEventListener('close', () => { lastRecord = null; });
   $('#qualitySel').addEventListener('change', (e) => setQuality(e.target.value));
   $('#micBtn').addEventListener('click', (e) => {
     const t = S.localStream.getAudioTracks()[0];
@@ -3389,6 +3548,7 @@ function openAlertSettings() {
   $$('input[name="alertFlash"]').forEach((r) => { r.checked = String(a.flash) === r.value; });
   $$('input[name="alertSound"]').forEach((r) => { r.checked = a.sound === r.value; });
   $('#alertVolume').value = Math.round(a.volume * 100);
+  updateNotifyRow();
   $('#alertDlg').showModal();
 }
 function readAlertSettings() {
@@ -3524,6 +3684,7 @@ function setupLobby() {
   // 着信の知らせ方
   $('#alertBtn').addEventListener('click', openAlertSettings);
   $('#alertTestBtn').addEventListener('click', testAlert);
+  $('#notifyBtn').addEventListener('click', async () => { await askNotify(); updateNotifyRow(); });
   $('#alertDlg').addEventListener('change', readAlertSettings);
   $('#alertDlg').addEventListener('close', () => { readAlertSettings(); stopAlertTest(); });
   setupTheme();

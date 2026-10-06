@@ -147,6 +147,7 @@
 <section id="room" hidden>
   <header class="topbar">
     <div class="tb-left">
+      <button id="fullBtn" class="tbtn" type="button" title="映像（図面）だけを画面いっぱいに表示（F）">全画面</button>
       <span id="connDot" class="dot"></span>
       <span id="connText">準備中</span>
     </div>
@@ -236,9 +237,9 @@
       <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
       <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
       <button id="minutesBtn" class="tool wide" title="ここまでの議事録を作る">議事録</button>
-      <button id="fullBtn" class="tool wide" title="映像（図面）だけを画面いっぱいに表示（F）">全画面</button>
       <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
       <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
+      <button id="recordBtn" class="tool wide" title="ここまでの資料・写真・書き込み・文字起こしを1つのファイル（ZIP）にまとめて保存">記録を保存</button>
     </div>
   </nav>
 </section>
@@ -275,6 +276,10 @@
     </fieldset>
     <label class="field"><span>音量</span><input id="alertVolume" type="range" min="0" max="100" step="5"></label>
     <p class="hint">PC本体の音量がミュートになっていると鳴りません。現場ではPCの音量も上げておいてください。</p>
+    <div id="notifyRow" class="notify-row" hidden>
+      <p id="notifyText" class="hint"></p>
+      <button id="notifyBtn" class="ghost small" type="button">デスクトップ通知を使う</button>
+    </div>
     <div class="row end">
       <button id="alertTestBtn" class="ghost" type="button">試しに鳴らす</button>
       <button class="primary" value="ok">閉じる</button>
@@ -294,6 +299,19 @@
       <p class="hint">「入室する」「入室を許可」「お断りする」「出る」などを押すと、撃ち抜かれたように割れます。効果音は押した側の端末だけで鳴り、相手には聞こえません。打ち合わせ中の画面のボタンは、ふつうのボタンのままです。</p>
     </div>
     <div class="row end"><button class="primary" value="ok">閉じる</button></div>
+  </form>
+</dialog>
+
+<!-- ===== 打ち合わせの記録 ===== -->
+<dialog id="recordDlg">
+  <form method="dialog">
+    <h2>打ち合わせの記録を保存しますか？</h2>
+    <p id="recordSummary"></p>
+    <p class="hint">資料・写真の元のファイル、書き込みのあるページ（書き込み付きの画像）、文字起こしとチャットを、1つのファイル（ZIP）にまとめてダウンロードのフォルダに保存します。保存しないと、この記録は消えます。</p>
+    <div class="row end">
+      <button class="ghost" value="cancel">保存しない</button>
+      <button id="recordSaveBtn" class="primary" type="button">保存する</button>
+    </div>
   </form>
 </dialog>
 

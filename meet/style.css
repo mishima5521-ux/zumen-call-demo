@@ -318,7 +318,9 @@ legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
 .grp:last-child { border-right: 0; }
 .tool { min-width: 44px; min-height: 44px; padding: 4px 10px; font-size: 14px; }
 .tool.on { background: var(--accent); border-color: var(--ink); color: var(--accent-text); }
-#openBtn, #liveRemoteBtn:not(.on), #fullBtn { background: var(--bar); color: var(--bar-text); }
+#openBtn, #liveRemoteBtn:not(.on) { background: var(--bar); color: var(--bar-text); }
+/* 全画面ボタンは画面の左上（上の帯の先頭） */
+#fullBtn { flex: none; white-space: nowrap; font-weight: 800; }
 .page { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; color: var(--muted); }
 .swatches { display: inline-flex; gap: 4px; margin: 0 4px; }
 .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
@@ -373,7 +375,7 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
 /* 全画面：上下のバーを隠して映像（図面）だけを表示 */
 #room.full .topbar, #room.full .toolbar { display: none; }
 .full-exit {
-  position: absolute; right: 12px; top: calc(12px + env(safe-area-inset-top)); z-index: 35;
+  position: absolute; left: 12px; top: calc(12px + env(safe-area-inset-top)); z-index: 35;
   min-height: 44px; padding: 6px 16px; border: 2px solid var(--paper);
   background: rgba(26,23,20,.85); color: var(--paper); font-weight: 800;
 }
@@ -384,6 +386,8 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   .topbar { flex-wrap: nowrap; }
   .tb-left { flex: 1; min-width: 0; flex-wrap: nowrap; }
   #connText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-size: 13px; }
+  .tb-left { overflow: hidden; }
+  #fullBtn { padding: 4px 6px; }
   .tb-right { flex-wrap: nowrap; }
   #settingsBtn { display: none; }
   .toolbar .grp:nth-child(4) { order: -2; }  /* 相手のカメラ・全画面・撮影 */
@@ -399,7 +403,6 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   body.demo .topbar .tb-left::before { white-space: nowrap; flex: none; }
   .toolbar .grp:nth-child(4) > * { order: 2; }
   #liveRemoteBtn { order: 0 !important; }
-  #fullBtn { order: 1 !important; }
   #flipBtn { order: 1 !important; }
 }
 
@@ -488,3 +491,4 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 .drop-hint { display: none; position: absolute; inset: 10px; z-index: 40; pointer-events: none; place-items: center; border: 4px dashed var(--accent); background: rgba(20, 18, 16, .55); }
 .drop-hint span { padding: 14px 22px; background: var(--accent); color: var(--accent-text); font-size: 20px; font-weight: 800; }
 #room.dropping .drop-hint { display: grid; }
+.notify-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
