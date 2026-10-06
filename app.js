@@ -46,7 +46,11 @@ const finite = (x) => typeof x === 'number' && Number.isFinite(x);
 const isId = (x) => typeof x === 'string' && x.length > 0 && x.length <= 64;
 const isKey = (x) => typeof x === 'string' && x.length > 0 && x.length <= 120;
 const validPts = (p, max) => Array.isArray(p) && p.length % 2 === 0 && p.length <= max && p.every(finite);
-const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool === 'pen') && typeof st.color === 'string' && /^#[0-9a-f]{6}$/i.test(st.color) && finite(st.w) && st.w > 0 && st.w < 10 && validPts(st.pts, 8000);
+// sw＝画面上の太さ（px）。拡大・縮小しても同じ太さで描く（無い線は図面に対する太さ w で描く＝以前の版の線）
+const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool === 'pen' || st.tool === 'text') && typeof st.color === 'string' && /^#[0-9a-f]{6}$/i.test(st.color) && finite(st.w) && st.w > 0 && st.w < 10
+  && (st.sw === undefined || (finite(st.sw) && st.sw >= 0.5 && st.sw <= 120))
+  && (st.tool !== 'text' || (typeof st.text === 'string' && st.text.length >= 1 && st.text.length <= 300 && st.pts.length === 2 && finite(st.sw)))
+  && validPts(st.pts, 8000);
 const validView = (v) => !!v && finite(v.cx) && finite(v.cy) && finite(v.zoom) && v.zoom > 0 && v.zoom <= 1000;
 function validContent(c) {
   if (!c || typeof c !== 'object') return false;
@@ -70,7 +74,9 @@ const QUALITY = {
 };
 
 const COLORS = ['#ffe600', '#ff4fa3', '#39d353', '#3fa9ff', '#e53935', '#222222'];
-const TOOL_WIDTH = { hl: 26, pen: 4 }; // 画面上の px（書いた時点の倍率で図面に固定される）
+// 太さ（画面上の px）：細い・ふつう・太い・とても太い。文字は大きさ
+const INK_WIDTHS = { pen: [2, 4, 7, 12], hl: [12, 20, 30, 44], text: [16, 22, 30, 42] };
+const INK_WIDTH_NAMES = { pen: ['細い', 'ふつう', '太い', 'とても太い'], hl: ['細い', 'ふつう', '太い', 'とても太い'], text: ['小', '中', '大', '特大'] };
 
 // ===================================================================
 // 状態
@@ -116,6 +122,7 @@ const S = {
   myStack: [],           // [key, id] 自分の書き込み（戻す用）
   tool: 'laser',
   color: COLORS[0],
+  inkW: Object.assign({ pen: 1, hl: 1, text: 1 }, store.get('inkW', {})), // 道具ごとの太さ（INK_WIDTHS の番号）
   pointers: new Map(),   // 'me' | 'remote' -> { pts:[{u,v,t}], key, name, last }
   incoming: new Map(),   // 受信中ファイル
   pendingDoc: null,
@@ -426,6 +433,29 @@ async function applyQuality() {
     }
   }
 }
+// 通話の始めから高めのビットレートで送る。ブラウザは低い値（約0.3Mbps）から少しずつ上げるため、
+// そのままだと始めの数十秒は映像がぼやける。回線が細ければ、ブラウザが自動で下げる
+function sdpBoost(kbps) {
+  return (sdp) => {
+    try {
+      const L = sdp.split('\r\n');
+      let video = false, sec = 0;
+      for (let i = 0; i < L.length; i++) {
+        if (L[i].startsWith('m=')) { video = L[i].startsWith('m=video'); sec = i; }
+        const m = video && /^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\/90000/.exec(L[i]);
+        if (!m) continue;
+        let end = L.findIndex((x, j) => j > sec && x.startsWith('m='));
+        if (end < 0) end = L.length;
+        const fi = L.findIndex((x, j) => j > sec && j < end && x.startsWith(`a=fmtp:${m[1]} `));
+        if (fi >= 0) { if (!L[fi].includes('x-google-start-bitrate')) L[fi] += `;x-google-start-bitrate=${kbps}`; }
+        else L.splice(i + 1, 0, `a=fmtp:${m[1]} x-google-start-bitrate=${kbps}`);
+      }
+      return L.join('\r\n');
+    } catch { return sdp; }
+  };
+}
+// 複数人のときは送り先の数だけ回線を使うので控えめに
+const sdpOpts = () => ({ sdpTransform: sdpBoost(isGroup() ? 800 : 1500) });
 function setQuality(q, { auto = false } = {}) {
   S.quality = q;
   S.autoBoosted = auto;
@@ -502,10 +532,10 @@ function onMediaCall(call) {
   const md = call.metadata || {};
   if (S.inCall && S.conn && call.peer === S.conn.peer && S.localStream) {
     if (isUid(md.relay)) { acceptRelay(call, md.relay); return; } // まとめ役が中継してくれる、ほかの参加者の映像
-    call.answer(outStream()); bindCall(call); return;
+    call.answer(outStream(), sdpOpts()); bindCall(call); return;
   }
   const X = S.inCall && S.role === 'host' && extraByPeer(call.peer);
-  if (X && S.localStream) { call.answer(outStream()); bindExtraCall(X, call); return; }
+  if (X && S.localStream) { call.answer(outStream(), sdpOpts()); bindExtraCall(X, call); return; }
   if (S.inCall && md.g && acceptMesh(call)) return;
   call.close();
 }
@@ -783,7 +813,7 @@ function onAccepted(o, m) {
   S.conn = o.c;
   bindConn(o.c);
   fileChannel(o.c);
-  const call = S.peer.call(o.peerId, outStream(), { metadata: { token: S.token } });
+  const call = S.peer.call(o.peerId, outStream(), { metadata: { token: S.token }, ...sdpOpts() });
   if (call) bindCall(call);
   sendHello();
   onCallConnected();
@@ -919,7 +949,7 @@ function bindCall(call) {
     if (S.inCall && S.role === 'guest') {
       setTimeout(() => {
         if (!S.inCall || S.call || !S.conn || !S.conn.open || !S.localStream) return;
-        const nc = S.peer.call(S.partner, outStream(), { metadata: { token: S.token } });
+        const nc = S.peer.call(S.partner, outStream(), { metadata: { token: S.token }, ...sdpOpts() });
         if (nc) bindCall(nc);
       }, 2000);
     }
@@ -1318,7 +1348,7 @@ function openChat(id) {
   const panel = $('#chatPanel');
   // 通話中は上下のバー（終了ボタン・ツールバー）を隠さない
   panel.style.top = S.inCall ? $('.topbar').getBoundingClientRect().bottom + 'px' : '0';
-  panel.style.bottom = S.inCall ? $('.toolbar').offsetHeight + 'px' : '0';
+  panel.style.bottom = S.inCall ? Math.max($('.toolbar').offsetHeight, $('#mainTools').offsetHeight) + 'px' : '0';
   panel.hidden = false;
   $('#chatTitle').textContent = chatName(id);
   renderChat();
@@ -1855,7 +1885,7 @@ function onMessage(m, c = S.conn) {
       break;
     case 'sp': {
       const st = isId(m.id) && S.strokeById.get(m.id);
-      if (st && validPts(m.pts, 4000) && st.pts.length + m.pts.length <= MAX_STROKE_PTS) { st.pts.push(...m.pts); if (S.cur && st.key === S.cur.key) drawInk(); }
+      if (st && st.tool !== 'text' && validPts(m.pts, 4000) && st.pts.length + m.pts.length <= MAX_STROKE_PTS) { st.pts.push(...m.pts); if (S.cur && st.key === S.cur.key) drawInk(); }
       break;
     }
     case 'del': if (isId(m.id)) deleteStroke(m.id, false); break;
@@ -2432,6 +2462,8 @@ async function renderCrisp() {
   b.drawImage(off, 0, 0);
 }
 
+// 保存する画像では、画面いっぱいに表示したとき（長い辺がおよそ 1200px）と同じ見た目の太さにする
+const inkPx = (w, h) => Math.max(w, h) / 1200;
 function drawInk() {
   const g = ctx.ink;
   g.setTransform(1, 0, 0, 1, 0, 0);
@@ -2444,8 +2476,9 @@ function drawInk() {
   drawStrokes(g, list, xform());
 }
 
+// t.px：画面上の太さ（sw）を何倍で描くか（画面は 1、保存する画像は画像の大きさに合わせる）
 function drawStrokes(g, list, t) {
-  const sx = t.W * t.s, sy = t.H * t.s;
+  const sx = t.W * t.s, sy = t.H * t.s, px = t.px || 1;
   for (const st of list) {
     const p = st.pts;
     if (!p.length) continue;
@@ -2454,8 +2487,11 @@ function drawStrokes(g, list, t) {
     g.strokeStyle = g.fillStyle = st.color;
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    g.lineWidth = Math.max(1, st.w * sx);
-    if (p.length === 2) {
+    g.lineWidth = Math.max(1, st.sw ? st.sw * px : st.w * sx);
+    if (st.tool === 'text') {
+      const b = textBox(g, st, t.ox + p[0] * sx, t.oy + p[1] * sy, st.sw * px);
+      b.lines.forEach((ln, i) => g.fillText(ln, b.x, b.y + i * b.lh));
+    } else if (p.length === 2) {
       g.beginPath();
       g.arc(t.ox + p[0] * sx, t.oy + p[1] * sy, g.lineWidth / 2, 0, Math.PI * 2);
       g.fill();
@@ -2467,6 +2503,16 @@ function drawStrokes(g, list, t) {
     }
     g.restore();
   }
+}
+
+// 書き込んだ文字の位置と大きさ（描くときと、消しゴムで当たりを見るときに使う）
+function textBox(g, st, x, y, size) {
+  g.font = `700 ${size}px system-ui, sans-serif`;
+  g.textBaseline = 'top';
+  const lines = st.text.split('\n');
+  const lh = size * 1.25;
+  const w = Math.max(...lines.map((ln) => g.measureText(ln).width));
+  return { x, y, w, h: lh * lines.length, lh, lines };
 }
 
 // レーザーポインター（常時アニメーション）
@@ -2565,7 +2611,12 @@ function eraseAt(x, y) {
   const list = S.strokes.get(S.cur.key) || [];
   for (let i = list.length - 1; i >= 0; i--) {
     const st = list[i], p = st.pts;
-    const tol = Math.max(8, (st.w * sx) / 2 + 4);
+    if (st.tool === 'text') {
+      const b = textBox(ctx.ink, st, t.ox + p[0] * sx, t.oy + p[1] * sy, st.sw);
+      if (x > b.x - 6 && x < b.x + b.w + 6 && y > b.y - 6 && y < b.y + b.h + 6) { deleteStroke(st.id); return; }
+      continue;
+    }
+    const tol = Math.max(8, (st.sw || st.w * sx) / 2 + 4);
     for (let j = 0; j < p.length; j += 2) {
       const ax = t.ox + p[j] * sx, ay = t.oy + p[j + 1] * sy;
       const bx = j + 2 < p.length ? t.ox + p[j + 2] * sx : ax, by = j + 2 < p.length ? t.oy + p[j + 3] * sy : ay;
@@ -2645,9 +2696,11 @@ el.ptr.addEventListener('pointerdown', (e) => {
     gesture = { type: 'pan', x: p.x, y: p.y, view0: { ...S.view } };
     el.stage.classList.add('panning');
   } else if (tool === 'hl' || tool === 'pen') {
+    commitText();
     const { u, v } = toNorm(p.x, p.y);
     const t = xform();
-    const s = { id: rid(), tool, color: S.color, w: TOOL_WIDTH[tool] / (t.W * t.s), pts: [u, v] };
+    const sw = inkWidth(tool);
+    const s = { id: rid(), tool, color: S.color, w: Math.min(9, sw / (t.W * t.s)), sw, pts: [u, v] };
     const st = addStroke(S.cur.key, s);
     S.myStack.push([S.cur.key, s.id]);
     send({ t: 'sb', key: S.cur.key, s });
@@ -2658,6 +2711,8 @@ el.ptr.addEventListener('pointerdown', (e) => {
   } else if (tool === 'laser') {
     gesture = { type: 'laser' };
     moveLaser(p);
+  } else if (tool === 'text') {
+    gesture = { type: 'text', p }; // 指・ペンを離したところで入力欄を出す（スマホでキーボードが出るように）
   }
 });
 
@@ -2710,11 +2765,55 @@ function flushStroke() {
   gesture.sent = performance.now();
 }
 function finishStroke() { flushStroke(); gesture = null; }
+const inkWidth = (tool) => { const w = INK_WIDTHS[tool] || INK_WIDTHS.pen; return w[clamp(S.inkW[tool] | 0, 0, w.length - 1)]; };
+
+// 文字の書き込み：押したところに入力欄を出し、Enter（または欄の外を押す）で全員の画面に書く
+let textEd = null;
+function openTextInput(p) {
+  commitText();
+  if (!S.cur) return;
+  const { u, v } = toNorm(p.x, p.y);
+  const size = inkWidth('text');
+  const inp = document.createElement('input');
+  inp.className = 'text-input';
+  inp.maxLength = 300;
+  inp.enterKeyHint = 'done';
+  inp.placeholder = '文字を入力して Enter';
+  inp.setAttribute('aria-label', '書き込む文字');
+  inp.style.left = clamp(p.x, 0, Math.max(0, SW - 160)) + 'px';
+  inp.style.top = clamp(p.y - 4, 0, Math.max(0, SH - size * 1.6)) + 'px';
+  inp.style.fontSize = size + 'px';
+  inp.style.color = S.color;
+  el.stage.appendChild(inp);
+  textEd = { inp, key: S.cur.key, u, v, size, color: S.color };
+  inp.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); commitText(); }
+    else if (e.key === 'Escape') { e.preventDefault(); commitText(true); }
+  });
+  inp.addEventListener('blur', () => commitText());
+  inp.focus();
+}
+function commitText(cancel = false) {
+  if (!textEd) return;
+  const { inp, key, u, v, size, color } = textEd;
+  textEd = null;
+  const text = inp.value.trim().slice(0, 300);
+  inp.remove();
+  if (cancel || !text || (S.strokes.get(key) || []).length >= MAX_STROKES) return;
+  const cur = S.cur && S.cur.key === key ? S.cur : null;
+  const t = cur ? xform() : null;
+  const s = { id: rid(), tool: 'text', color, w: t ? Math.min(9, size / (t.W * t.s)) : 0.02, sw: size, text, pts: [clamp(u, 0, 1), clamp(v, 0, 1)] };
+  addStroke(key, s);
+  S.myStack.push([key, s.id]);
+  send({ t: 'sb', key, s });
+}
 
 function endPointer(e) {
   touches.delete(e.pointerId);
   if (!gesture) return;
   if (gesture.type === 'stroke') finishStroke();
+  else if (gesture.type === 'text') { if (e.type === 'pointerup') openTextInput(gesture.p); gesture = null; }
   else if (gesture.type === 'laser' && e.pointerType !== 'mouse') { S.pointers.delete('me'); send({ t: 'ptr-off' }); gesture = null; }
   else if (gesture.type === 'pinch') { if (touches.size < 2) gesture = null; }
   else gesture = null;
@@ -2737,8 +2836,18 @@ el.ptr.addEventListener('wheel', (e) => {
 // ===================================================================
 function setupWipe(w) {
   let drag = null;
+  // 大きさの変更：左上の「－」「＋」（右の端はそのまま）。左下の角をつかんでも変えられる
+  const sz = document.createElement('div');
+  sz.className = 'wipe-size';
+  for (const [label, f, title] of [['－', 1 / 1.25, '小さく'], ['＋', 1.25, '大きく']]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label; b.title = title;
+    b.addEventListener('click', () => resizeWipe(w, f));
+    sz.appendChild(b);
+  }
+  w.appendChild(sz);
   w.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.wipe-close')) return;
+    if (e.target.closest('.wipe-close, .wipe-size')) return;
     e.preventDefault();
     w.setPointerCapture(e.pointerId);
     const r = w.getBoundingClientRect(), sr = el.stage.getBoundingClientRect();
@@ -2772,6 +2881,13 @@ function setupWipe(w) {
   });
   w.querySelector('.wipe-close').addEventListener('click', () => { w.dataset.closed = '1'; updateWipes(); });
 }
+function resizeWipe(w, f) {
+  const r = w.getBoundingClientRect(), sr = el.stage.getBoundingClientRect();
+  const nw = clamp(w.offsetWidth * f, 120, Math.max(120, SW * 0.9));
+  w.style.width = nw + 'px';
+  if (w.style.left) w.style.left = r.right - sr.left - nw + 'px';
+  keepWipesInside();
+}
 function keepWipesInside() {
   for (const w of [el.remoteWipe, el.selfWipe]) {
     if (!w.style.left) continue;
@@ -2782,7 +2898,7 @@ function keepWipesInside() {
 function updateWipes() {
   const live = S.content.type === 'live' ? S.content.who : null;
   const remoteWho = S.role === 'host' ? 'guest' : 'host';
-  // 複数人のときは、相手の映像を左の列に並べる（ワイプは自分だけ）
+  // 複数人のときは、相手の映像を右の列に並べる（ワイプは自分だけ）
   el.remoteWipe.hidden = isGroup() || !S.remoteStream || el.remoteWipe.dataset.closed === '1' || live === remoteWho || (!!live && live === S.partnerUid);
   el.selfWipe.hidden = el.selfWipe.dataset.closed === '1' || (!!live && isMeWho(live) && !S.content.screen);
   el.selfWipe.classList.toggle('mirror', S.mirror && realVideoTrack()?.getSettings().facingMode !== 'environment');
@@ -2884,7 +3000,7 @@ async function saveImage() {
   await drawBg(g);
   const ink = document.createElement('canvas');
   ink.width = W; ink.height = H;
-  drawStrokes(ink.getContext('2d'), S.strokes.get(cur.key) || [], { s: W / cur.W, ox: 0, oy: 0, W: cur.W, H: cur.H });
+  drawStrokes(ink.getContext('2d'), S.strokes.get(cur.key) || [], { s: W / cur.W, ox: 0, oy: 0, W: cur.W, H: cur.H, px: inkPx(W, H) });
   g.globalCompositeOperation = 'multiply';
   g.drawImage(ink, 0, 0);
   progress(null);
@@ -3008,7 +3124,7 @@ async function saveRecord(r) {
           await drawBg(g);
           const ink = document.createElement('canvas');
           ink.width = c.width; ink.height = c.height;
-          drawStrokes(ink.getContext('2d'), strokes.get(`${d.id}:${n}`), { s: k, ox: 0, oy: 0, W, H });
+          drawStrokes(ink.getContext('2d'), strokes.get(`${d.id}:${n}`), { s: k, ox: 0, oy: 0, W, H, px: inkPx(c.width, c.height) });
           g.globalCompositeOperation = 'multiply';
           g.drawImage(ink, 0, 0);
           const png = await new Promise((res) => c.toBlob(res, 'image/png'));
@@ -3088,9 +3204,38 @@ function setTool(t) {
   el.stage.className = 'tool-' + t;
   if (t !== 'laser' && S.pointers.has('me')) { S.pointers.delete('me'); send({ t: 'ptr-off' }); }
   if (t === 'hl' && S.color === '#222222') setColor(COLORS[0]); // 黒の蛍光ペンは見えにくい
+  if (t === 'text' && S.color === COLORS[0]) setColor('#e53935'); // 黄色の文字は白い図面で読めない
+  if (t !== 'text') commitText();
+  renderWidths();
+}
+// 太さ（文字は大きさ）の選びボタン：いま選んでいる道具のものを出す
+function renderWidths() {
+  const box = $('#widths');
+  if (!box) return;
+  const tool = INK_WIDTHS[S.tool] ? S.tool : 'pen';
+  box.innerHTML = '';
+  box.setAttribute('aria-label', tool === 'text' ? '文字の大きさ' : '線の太さ');
+  INK_WIDTHS[tool].forEach((w, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'wbtn' + (i === (S.inkW[tool] | 0) ? ' on' : '');
+    b.title = `${tool === 'text' ? '文字の大きさ' : tool === 'hl' ? '蛍光ペンの太さ' : 'ペンの太さ'}：${INK_WIDTH_NAMES[tool][i]}`;
+    const dot = document.createElement('i');
+    if (tool === 'text') { dot.className = 'wtext'; dot.textContent = 'あ'; dot.style.fontSize = Math.round(10 + i * 4) + 'px'; }
+    else { const d = Math.min(24, Math.max(3, Math.round(tool === 'hl' ? w / 2 : w * 1.6))); dot.style.width = dot.style.height = d + 'px'; if (tool === 'hl') dot.className = 'hl'; }
+    b.appendChild(dot);
+    b.addEventListener('click', () => {
+      S.inkW[tool] = i;
+      store.set('inkW', S.inkW);
+      if (S.tool !== tool) setTool(tool); else renderWidths();
+      if (textEd && tool === 'text') { textEd.size = inkWidth('text'); textEd.inp.style.fontSize = textEd.size + 'px'; textEd.inp.focus(); }
+    });
+    box.appendChild(b);
+  });
 }
 function setColor(c) {
   S.color = c;
+  if (textEd) { textEd.color = c; textEd.inp.style.color = c; }
   $$('.swatch').forEach((b) => b.classList.toggle('on', b.dataset.color === c));
 }
 function updateToolbar() {
@@ -3100,6 +3245,11 @@ function updateToolbar() {
   el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? (c.screen ? '画面' : 'カメラ') : '-';
   $('#prevBtn').disabled = !isPdf || c.page <= 1;
   $('#nextBtn').disabled = !isPdf || c.page >= doc.pages;
+  // 全画面のときの「前のページ・次のページ」（ページが2枚以上の図面だけ）
+  $('#fullNav').hidden = !el.room.classList.contains('full') || !isPdf || doc.pages < 2;
+  $('#fullPage').textContent = el.pageText.textContent;
+  $('#fullPrevBtn').disabled = $('#prevBtn').disabled;
+  $('#fullNextBtn').disabled = $('#nextBtn').disabled;
   $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && !isMeWho(c.who) && !c.screen);
   $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && isMeWho(c.who) && !c.screen);
   const sb = $('#shareBtn');
@@ -3112,6 +3262,7 @@ function setFullscreen(on) {
   if (on && S.content.type === 'none') showLive(otherWho()); // 何も映していなければ相手のカメラ
   el.room.classList.toggle('full', on);
   $('#fullExitBtn').hidden = !on;
+  updateToolbar();
   try {
     if (on && !document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
     else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -3312,16 +3463,19 @@ function setupToolbar() {
     b.dataset.color = c;
     b.style.background = c;
     b.title = '色';
-    b.addEventListener('click', () => { setColor(c); if (S.tool !== 'hl' && S.tool !== 'pen') setTool('hl'); });
+    b.addEventListener('click', () => { setColor(c); if (S.tool !== 'hl' && S.tool !== 'pen' && S.tool !== 'text') setTool('pen'); if (textEd) textEd.inp.focus(); });
     sw.appendChild(b);
   }
   setColor(S.color);
+  renderWidths();
   $$('.tool-sel').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#openBtn').addEventListener('click', () => el.fileInput.click());
   if (CONV) el.fileInput.accept = CONV.accept;
   el.fileInput.addEventListener('change', () => { const fs = Array.from(el.fileInput.files || []); el.fileInput.value = ''; if (fs.length) openLocalFiles(fs); });
   $('#prevBtn').addEventListener('click', () => gotoPage(-1));
   $('#nextBtn').addEventListener('click', () => gotoPage(1));
+  $('#fullPrevBtn').addEventListener('click', () => gotoPage(-1));
+  $('#fullNextBtn').addEventListener('click', () => gotoPage(1));
   $('#zoomInBtn').addEventListener('click', () => zoomAt(SW / 2, SH / 2, 1.4));
   $('#zoomOutBtn').addEventListener('click', () => zoomAt(SW / 2, SH / 2, 1 / 1.4));
   $('#fitBtn').addEventListener('click', () => { S.view = { cx: 0.5, cy: 0.5, zoom: 1 }; viewChanged(); });
@@ -3435,6 +3589,7 @@ function setupToolbar() {
     else if (k === 'h' || k === 'H') setTool('hl');
     else if (k === 'p' || k === 'P') setTool('pen');
     else if (k === 'e' || k === 'E') setTool('eraser');
+    else if (k === 't' || k === 'T') setTool('text');
     else if (k === 'm' || k === 'M') setTool('hand');
     else if (k === 'f' || k === 'F') setFullscreen(!el.room.classList.contains('full'));
     else if (k === 'Escape' && el.room.classList.contains('full')) setFullscreen(false);
@@ -3983,7 +4138,7 @@ function syncMesh() {
   for (const p of others) {
     // 2人のうち、ID の小さい方からかける（両方からかけて二重にならないように）
     if (!p.mesh || S.mesh.has(p.uid) || !(mine < p.mesh)) continue;
-    const call = meshPeerObj().call(p.mesh, outStream(), { metadata: { g: S.party.id, uid: S.uid } });
+    const call = meshPeerObj().call(p.mesh, outStream(), { metadata: { g: S.party.id, uid: S.uid }, ...sdpOpts() });
     if (call) bindMesh(p.uid, call);
   }
 }
@@ -4015,7 +4170,7 @@ function acceptMesh(call) {
   const old = S.mesh.get(p.uid);
   S.mesh.delete(p.uid);
   if (old) { try { old.call.close(); } catch { /* 閉じている */ } }
-  call.answer(outStream());
+  call.answer(outStream(), sdpOpts());
   bindMesh(p.uid, call);
   return true;
 }
@@ -4071,7 +4226,7 @@ function relayTo(c, uid) {
   const key = to + '>' + uid;
   const st = streamOfWho(uid);
   if (!to || uid === to || S.relayOut.has(key) || !st || !c.provider) return;
-  const call = c.provider.call(c.peer, st, { metadata: { relay: uid } });
+  const call = c.provider.call(c.peer, st, { metadata: { relay: uid }, ...sdpOpts() });
   if (!call) return;
   S.relayOut.set(key, call);
   const gone = () => { if (S.relayOut.get(key) === call) S.relayOut.delete(key); };
@@ -4926,6 +5081,16 @@ async function init() {
   setInterval(meshCheck, 5000);
   setInterval(checkWaiting, 4000);
   $('#tilesHideBtn').addEventListener('click', () => { $('#peerTiles').dataset.closed = '1'; partyMedia(); });
+  // 参加者の映像（右の列）の大きさ：小さく・大きく（次回も同じ大きさ）
+  const tileSize = (f) => {
+    const box = $('#peerTiles');
+    const w = clamp(Math.round((store.get('tileW', 0) || box.querySelector('.ptile')?.offsetWidth || 180) * f), 110, Math.max(110, Math.min(560, SW * 0.45)));
+    store.set('tileW', w);
+    box.style.setProperty('--tile-w', w + 'px');
+  };
+  if (store.get('tileW', 0)) $('#peerTiles').style.setProperty('--tile-w', store.get('tileW', 0) + 'px');
+  $('#tilesSmallBtn').addEventListener('click', () => tileSize(1 / 1.25));
+  $('#tilesBigBtn').addEventListener('click', () => tileSize(1.25));
   $('#partyCopyBtn').addEventListener('click', (e) => { if (S.meeting) copyLink(meetLink(S.meeting), $('#partyLink'), e.currentTarget); });
   $('#partyMailBtn').addEventListener('click', mailMeeting);
   audioCtx(); // 起動オプションで自動再生が許可されていれば、この時点で着信音が使える

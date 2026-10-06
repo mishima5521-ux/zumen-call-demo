@@ -257,6 +257,13 @@ legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
 #stage.tool-laser #ptrCanvas { cursor: none; }
 #stage.tool-hl #ptrCanvas, #stage.tool-pen #ptrCanvas { cursor: crosshair; }
 #stage.tool-eraser #ptrCanvas { cursor: cell; }
+#stage.tool-text #ptrCanvas { cursor: text; }
+/* 文字の書き込み：押したところに出る入力欄 */
+.text-input {
+  position: absolute; z-index: 26; min-width: 160px; width: min(420px, 60%); min-height: 0; padding: 0 4px;
+  font-weight: 700; font-family: system-ui, sans-serif; line-height: 1.25;
+  background: rgba(255,255,255,.9); border: 2px dashed var(--accent); outline: none;
+}
 
 #emptyHint {
   position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
@@ -391,10 +398,10 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
   #fullBtn { padding: 4px 6px; }
   .tb-right { flex-wrap: nowrap; }
   #settingsBtn { display: none; }
-  .toolbar .grp:nth-child(4) { order: -2; }  /* 相手のカメラ・全画面・撮影 */
-  .toolbar .grp:nth-child(3) { order: -1; }  /* ポインター・蛍光ペンなど */
-  .toolbar .grp:last-child { border-right: 1px solid var(--line); }
-  .toolbar .grp:first-child { border-right: 0; }
+  .toolbar .g-live { order: -2; }  /* 相手のカメラ・全画面・撮影 */
+  .toolbar .g-ink { order: -1; }   /* ポインター・蛍光ペンなど */
+  .toolbar .g-live { border-right: 1px solid var(--line); }
+  .toolbar .g-file { border-right: 0; }
   #wipeBtn, #saveBtn { display: none; }
 }
 @media (max-width: 420px) {
@@ -402,7 +409,7 @@ body.demo .topbar .tb-left::before { margin: 0 4px 0 0; }
 }
 @media (max-width: 720px) {
   body.demo .topbar .tb-left::before { white-space: nowrap; flex: none; }
-  .toolbar .grp:nth-child(4) > * { order: 2; }
+  .toolbar .g-live > * { order: 2; }
   #liveRemoteBtn { order: 0 !important; }
   #flipBtn { order: 1 !important; }
 }
@@ -495,16 +502,16 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 .notify-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 
 /* 複数人の打ち合わせ：ほかの参加者の映像を左の列に並べる */
-.peer-tiles { position: absolute; left: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 24px); overflow-y: auto; }
+.peer-tiles { position: absolute; right: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-height: calc(100% - 140px); overflow-y: auto; }
 .ptile {
-  position: relative; flex: none; width: 180px; aspect-ratio: 16 / 9; padding: 0; min-height: 0;
+  position: relative; flex: none; width: var(--tile-w, 180px); aspect-ratio: 16 / 9; padding: 0; min-height: 0;
   background: #000; overflow: hidden; border: 3px solid var(--ink); outline: 2px solid var(--accent); cursor: pointer;
 }
 .ptile[hidden] { display: none; }
 .ptile video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; display: block; }
 .ptile .wipe-label { left: 0; }
 .ptile.down video { opacity: .35; }
-#room.full .peer-tiles { top: 68px; }
+#room.full .peer-tiles { top: calc(12px + env(safe-area-inset-top)); }
 .party-count { font-size: 14px; color: var(--muted); font-family: var(--font); }
 .party-sub { margin: 4px 0 0; font-size: 15px; }
 .party-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
@@ -513,10 +520,11 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 .pick-list { display: flex; flex-direction: column; gap: 8px; }
 .pick-list .pick { min-height: 48px; font-size: 17px; }
 @media (max-width: 720px) {
-  .ptile { width: 104px; border-width: 2px; }
+  .ptile { width: min(var(--tile-w, 104px), 45vw); border-width: 2px; }
   .ptile .wipe-label { font-size: 12px; }
 }
-.tiles-hide { align-self: flex-start; min-height: 28px; padding: 2px 10px; font-size: 12px; background: rgba(26,23,20,.75); color: #fff; border: 0; }
+.tiles-bar { display: flex; gap: 4px; flex: none; }
+.tiles-bar button { min-height: 28px; padding: 2px 10px; font-size: 12px; background: rgba(26,23,20,.75); color: #fff; border: 0; }
 
 /* AIで議事録：使う AI を選ぶ */
 .ai-choices { display: flex; flex-direction: column; gap: 8px; }
@@ -559,3 +567,72 @@ body.hosted .me, body.hosted #historyBtn { display: none; }
 .wait-panel li button:disabled { opacity: .55; }
 .room-now { font-weight: 700; color: var(--accent-dark); }
 .wait-panel li .wait-name b { white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* ---------- PC・タブレット：図面の操作と書き込みは左の列、人・カメラ・記録は下の1段 ---------- */
+.pager { display: inline-flex; align-items: center; gap: 4px; }
+.widths { display: inline-flex; gap: 2px; margin: 0 4px; }
+.wbtn { display: grid; place-items: center; width: 36px; height: 36px; min-height: 0; padding: 0; border: 1px solid var(--line); background: transparent; }
+.wbtn i { display: block; border-radius: 50%; background: var(--ink); }
+.wbtn i.hl { background: #e6c200; opacity: .8; border-radius: 3px; }
+.wbtn i.wtext { background: none; border-radius: 0; font-style: normal; font-weight: 800; line-height: 1; color: var(--ink); }
+.wbtn.on { border: 2px solid var(--ink); box-shadow: 0 0 0 2px var(--accent); }
+@media (min-width: 721px) {
+  #room {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "top top" "side stage" "side tabs" "bottom bottom";
+  }
+  #room > .topbar { grid-area: top; }
+  #stage { grid-area: stage; }
+  #tabbar { grid-area: tabs; }
+  #room .toolbar { display: contents; }
+  .side-tools {
+    grid-area: side; width: 178px; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+    padding: 8px; background: var(--paper); border-right: 3px solid var(--ink);
+  }
+  .side-tools .grp { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .side-tools .grp:last-child { border-bottom: 0; padding-bottom: 0; }
+  .side-tools .tool { min-width: 0; min-height: 38px; padding: 2px 4px; font-size: 13px; white-space: nowrap; letter-spacing: 0; }
+  .side-tools .wide, .side-tools .pager, .side-tools .swatches, .side-tools .widths { grid-column: 1 / -1; }
+  .side-tools .pager { display: grid; grid-template-columns: 44px 1fr 44px; }
+  .side-tools .page { min-width: 0; }
+  .side-tools .swatches { display: grid; grid-template-columns: repeat(3, 32px); justify-content: space-around; row-gap: 6px; margin: 2px 0; }
+  .side-tools .swatch { width: 32px; height: 32px; }
+  .side-tools .widths { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0; }
+  .side-tools .wbtn { width: auto; }
+  .main-tools {
+    grid-area: bottom; display: flex; justify-content: center;
+    padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); background: var(--paper); border-top: 3px solid var(--ink);
+  }
+  .main-tools .grp { justify-content: center; border-right: 0; padding-right: 0; }
+  /* 左右の余白が少ない画面では、下の段のボタンを詰める */
+  @media (max-width: 1180px) { .main-tools .tool { padding: 4px 6px; font-size: 13px; letter-spacing: 0; } }
+}
+
+/* 全画面のときの「前のページ・次のページ」 */
+.full-nav {
+  position: absolute; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 35;
+  display: flex; align-items: center; gap: 6px; padding: 4px; background: rgba(26,23,20,.85); border: 2px solid var(--paper);
+}
+.full-nav button { min-height: 48px; padding: 6px 16px; border: 0; background: var(--paper); color: var(--ink); font-weight: 800; font-size: 16px; }
+.full-nav button:disabled { opacity: .35; }
+.full-nav span { min-width: 64px; text-align: center; color: var(--paper); font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) { .full-nav button { padding: 6px 10px; font-size: 14px; } }
+
+/* ワイプの大きさ：左上の「－」「＋」 */
+.wipe-size { position: absolute; left: 4px; top: 4px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+.wipe-size button { width: 28px; height: 28px; min-height: 0; border-radius: 50%; border: 0; padding: 0; line-height: 1; background: rgba(0,0,0,.55); color: #fff; font-weight: 800; }
+.wipe:hover .wipe-size, .wipe:focus-within .wipe-size { opacity: 1; }
+@media (hover: none) { .wipe-size { opacity: 1; } }
+@media (max-width: 720px) {
+  .side-tools, .main-tools { display: contents; }
+  .wbtn { width: 40px; height: 44px; }
+}
+/* PC：上の帯は1行に収める（文字が長いときは「…」で省略）。図面の表示を少しでも広く */
+@media (min-width: 721px) {
+  .topbar { flex-wrap: nowrap; }
+  .tb-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+  #connText { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tb-right { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; }
+  .tb-right > * { flex: none; }
+  .tb-right > .stats { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
