@@ -157,7 +157,6 @@
 <section id="room" hidden>
   <header class="topbar">
     <div class="tb-left">
-      <button id="fullBtn" class="tbtn" type="button" title="映像（図面）だけを画面いっぱいに表示（F）">全画面</button>
       <span id="connDot" class="dot"></span>
       <span id="connText">準備中</span>
     </div>
@@ -241,11 +240,6 @@
     <div id="captions" class="captions" aria-live="polite"></div>
     <div id="banner" hidden></div>
     <button id="fullExitBtn" class="full-exit" type="button" hidden>全画面を終わる</button>
-    <div id="fullNav" class="full-nav" hidden>
-      <button id="fullPrevBtn" type="button" title="前のページ（←）">◀ 前のページ</button>
-      <span id="fullPage"></span>
-      <button id="fullNextBtn" type="button" title="次のページ（→）">次のページ ▶</button>
-    </div>
     <div class="drop-hint" aria-hidden="true"><span>ここに離すと、図面を開いて相手にも表示します</span></div>
   </main>
 
@@ -258,14 +252,8 @@
   <nav class="toolbar">
     <!-- 左の列：図面の操作と書き込み（スマホでは下の1段に並ぶ） -->
     <div id="sideTools" class="side-tools" aria-label="図面の操作と書き込み">
-      <div class="grp g-file">
-        <button id="openBtn" class="tool wide" title="PDF・写真・Word・Excel・PowerPoint・CAD（DXF）などを開いて相手にも表示">図面を開く</button>
-        <div class="pager">
-          <button id="prevBtn" class="tool" title="前のページ（←）">◀</button>
-          <span id="pageText" class="page">-</span>
-          <button id="nextBtn" class="tool" title="次のページ（→）">▶</button>
-        </div>
-      </div>
+      <!-- 全画面のときだけ出る：道具のパレットの見出し（ドラッグで移動・たたむ） -->
+      <div class="pal-head"><span id="palGrip" class="pal-grip" title="ドラッグで移動">✥ 道具</span><button id="palFoldBtn" type="button" title="道具をたたむ・ひらく">たたむ</button></div>
       <div class="grp g-view">
         <div class="pager">
           <button id="zoomOutBtn" class="tool" title="縮小（-）">－</button>
@@ -279,29 +267,38 @@
         <button class="tool tool-sel" data-tool="laser" title="レーザーポインター（L）">ポインター</button>
         <button class="tool tool-sel" data-tool="hl" title="蛍光ペン（H）">蛍光ペン</button>
         <button class="tool tool-sel" data-tool="pen" title="ペン（P）">ペン</button>
-        <button class="tool tool-sel" data-tool="text" title="文字：図面の上を押して文字を入力し、Enter で書き込む（T）">文字</button>
+        <button class="tool tool-sel" data-tool="text" title="文字：図面の上を押して入力（Enter で改行、「確定」で書き込む）。書いた文字は押すと直せる・ドラッグで移動（T）">文字</button>
         <button class="tool tool-sel" data-tool="eraser" title="消しゴム：線や文字をなぞると消える（E）">消しゴム</button>
         <span class="swatches" id="swatches"></span>
         <span class="widths" id="widths" role="group" aria-label="線の太さ"></span>
         <button id="undoBtn" class="tool" title="自分の書き込みを1つ戻す（Ctrl+Z）">戻す</button>
         <button id="clearBtn" class="tool" title="このページの書き込みを全部消す">全消去</button>
       </div>
+      <div class="grp g-file">
+        <button id="openBtn" class="tool wide" title="PDF・写真・Word・Excel・PowerPoint・CAD（DXF）などを開いて相手にも表示">図面を開く</button>
+        <div class="pager">
+          <button id="prevBtn" class="tool" title="前のページ（←）">◀</button>
+          <span id="pageText" class="page">-</span>
+          <button id="nextBtn" class="tool" title="次のページ（→）">▶</button>
+        </div>
+      </div>
     </div>
     <!-- 下の1段：人・カメラ・記録 -->
     <div id="mainTools" class="main-tools">
       <div class="grp g-live">
-        <button id="addBtn" class="tool wide" title="打ち合わせに人を加える（最大6人）・参加者の一覧">人を追加</button>
-        <button id="liveRemoteBtn" class="tool wide" title="相手のカメラ映像を大きく表示">相手のカメラ</button>
-        <button id="flipBtn" class="tool wide" title="カメラを切り替える（スマホは外側／内側）" hidden>カメラ切替</button>
-        <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
+        <button id="fullBtn" class="tool wide" type="button" title="図面（映像）だけを画面いっぱいに表示（F）。道具は小さいパレットで使えます">全画面</button>
         <button id="shareBtn" class="tool wide" title="自分のPCの画面（デスクトップ・アプリ）を相手に見せる">画面共有</button>
+        <button id="liveSelfBtn" class="tool wide" title="自分のカメラ映像を大きく表示">自分のカメラ</button>
+        <button id="liveRemoteBtn" class="tool wide" title="相手のカメラ映像を大きく表示">相手のカメラ</button>
         <button id="snapSelfBtn" class="tool wide" title="自分のカメラで高画質の静止画を撮って共有">撮影（自分）</button>
         <button id="snapRemoteBtn" class="tool wide" title="相手のカメラで高画質の静止画を撮ってもらい共有">撮影（相手）</button>
+        <button id="flipBtn" class="tool wide" title="カメラを切り替える（スマホは外側／内側）" hidden>カメラ切替</button>
+        <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
         <button id="trBtn" class="tool wide" title="話した内容を文字にする（相手側も自動で始まります）。議事録に使います">文字起こし</button>
         <button id="minutesBtn" class="tool wide" title="ここまでの文字起こし・チャットから、Gemini・ChatGPT・Claude・Copilot で議事録を作る">議事録（AI）</button>
-        <button id="wipeBtn" class="tool" title="隠したワイプを再表示">ワイプ</button>
         <button id="saveBtn" class="tool" title="書き込み付きで画像保存">保存</button>
         <button id="recordBtn" class="tool wide" title="ここまでの資料・写真・書き込み・文字起こしを1つのファイル（ZIP）にまとめて保存">記録を保存</button>
+        <button id="addBtn" class="tool wide" title="打ち合わせに人を加える（最大6人）・参加者の一覧">人を追加</button>
       </div>
     </div>
   </nav>

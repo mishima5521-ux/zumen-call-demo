@@ -49,7 +49,7 @@ const validPts = (p, max) => Array.isArray(p) && p.length % 2 === 0 && p.length 
 // sw＝画面上の太さ（px）。拡大・縮小しても同じ太さで描く（無い線は図面に対する太さ w で描く＝以前の版の線）
 const validStroke = (st) => !!st && isId(st.id) && (st.tool === 'hl' || st.tool === 'pen' || st.tool === 'text') && typeof st.color === 'string' && /^#[0-9a-f]{6}$/i.test(st.color) && finite(st.w) && st.w > 0 && st.w < 10
   && (st.sw === undefined || (finite(st.sw) && st.sw >= 0.5 && st.sw <= 120))
-  && (st.tool !== 'text' || (typeof st.text === 'string' && st.text.length >= 1 && st.text.length <= 300 && st.pts.length === 2 && finite(st.sw)))
+  && (st.tool !== 'text' || (typeof st.text === 'string' && st.text.length >= 1 && st.text.length <= 1000 && st.pts.length === 2 && finite(st.sw)))
   && validPts(st.pts, 8000);
 const validView = (v) => !!v && finite(v.cx) && finite(v.cy) && finite(v.zoom) && v.zoom > 0 && v.zoom <= 1000;
 function validContent(c) {
@@ -1817,7 +1817,7 @@ function setupMinutes() {
 // 受信メッセージ
 // ===================================================================
 // 届いたデータ：まとめ役は、ほかの参加者にも配る（送った人の番号を付けて）
-const RELAY = new Set(['content', 'view', 'ptr', 'ptr-off', 'sb', 'sp', 'del', 'clear', 'doc-close', 'share', 'msg', 'tr', 'tr-state', 'tr-na', 'chat', 'pv']);
+const RELAY = new Set(['content', 'view', 'ptr', 'ptr-off', 'sb', 'sp', 'del', 'tx', 'clear', 'doc-close', 'share', 'msg', 'tr', 'tr-state', 'tr-na', 'chat', 'pv']);
 function linkAlive(c) { return !!c && (c === S.conn || !!extraByConn(c)); }
 function onLinkData(c, m) {
   if (!m || typeof m !== 'object' || !linkAlive(c)) return; // 古い接続から遅れて届いたデータは捨てる
@@ -1889,6 +1889,15 @@ function onMessage(m, c = S.conn) {
       break;
     }
     case 'del': if (isId(m.id)) deleteStroke(m.id, false); break;
+    case 'tx': {
+      const st = isId(m.id) && S.strokeById.get(m.id);
+      if (st && st.tool === 'text' && typeof m.text === 'string' && m.text.length >= 1 && m.text.length <= 1000 && finite(m.sw) && m.sw >= 0.5 && m.sw <= 120
+        && typeof m.color === 'string' && /^#[0-9a-f]{6}$/i.test(m.color) && validPts(m.pts, 2) && m.pts.length === 2) {
+        if (textEd && textEd.id === st.id) commitText(true); // ほかの人が同時に直したときは、そちらを使う
+        updateText(st, { text: m.text, sw: m.sw, color: m.color, pts: m.pts }, false);
+      }
+      break;
+    }
     case 'clear': if (isKey(m.key)) clearStrokes(m.key, false); break;
     case 'snap-req':
       // 複数人のときは、撮ってほしい人あて。まとめ役は、その人に渡す
@@ -2465,6 +2474,8 @@ async function renderCrisp() {
 // 保存する画像では、画面いっぱいに表示したとき（長い辺がおよそ 1200px）と同じ見た目の太さにする
 const inkPx = (w, h) => Math.max(w, h) / 1200;
 function drawInk() {
+  if (textEd && (!S.cur || S.cur.key !== textEd.key)) commitText(); // ページ・タブを替えたら確定
+  placeTextEd();
   const g = ctx.ink;
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, el.ink.width, el.ink.height);
@@ -2481,7 +2492,7 @@ function drawStrokes(g, list, t) {
   const sx = t.W * t.s, sy = t.H * t.s, px = t.px || 1;
   for (const st of list) {
     const p = st.pts;
-    if (!p.length) continue;
+    if (!p.length || (textEd && st.id === textEd.id)) continue; // 直している文字は入力欄に出す
     g.save();
     g.globalAlpha = st.tool === 'hl' ? 0.4 : 1;
     g.strokeStyle = g.fillStyle = st.color;
@@ -2598,9 +2609,13 @@ function clearStrokes(key, doSend = true) {
   if (S.cur && S.cur.key === key) drawInk();
 }
 function undo() {
+  commitText(true);
   while (S.myStack.length) {
-    const [, id] = S.myStack.pop();
-    if (S.strokeById.has(id)) { deleteStroke(id); return; }
+    const [, id, prev] = S.myStack.pop();
+    const st = S.strokeById.get(id);
+    if (!st) continue;
+    if (prev) updateText(st, prev); else deleteStroke(id); // 文字を直したときは、直す前に戻す
+    return;
   }
 }
 
@@ -2680,6 +2695,7 @@ function sendPointer(u, v) {
 }
 
 el.ptr.addEventListener('pointerdown', (e) => {
+  if (textEd && touches.size === 0) commitText(); // 入力中の文字は、図面の別のところを押したら確定
   el.ptr.setPointerCapture(e.pointerId);
   const p = localPos(e);
   touches.set(e.pointerId, p);
@@ -2696,7 +2712,6 @@ el.ptr.addEventListener('pointerdown', (e) => {
     gesture = { type: 'pan', x: p.x, y: p.y, view0: { ...S.view } };
     el.stage.classList.add('panning');
   } else if (tool === 'hl' || tool === 'pen') {
-    commitText();
     const { u, v } = toNorm(p.x, p.y);
     const t = xform();
     const sw = inkWidth(tool);
@@ -2712,7 +2727,10 @@ el.ptr.addEventListener('pointerdown', (e) => {
     gesture = { type: 'laser' };
     moveLaser(p);
   } else if (tool === 'text') {
-    gesture = { type: 'text', p }; // 指・ペンを離したところで入力欄を出す（スマホでキーボードが出るように）
+    // 書いた文字を押す → 選んで直す（ドラッグなら移動）。何もないところ → 新しく書く
+    // 指・ペンを離したところで入力欄を出す（スマホでキーボードが出るように）
+    const hit = textAt(p.x, p.y);
+    gesture = { type: 'text', p, hit, u0: hit && hit.pts[0], v0: hit && hit.pts[1], moved: false, sent: 0 };
   }
 });
 
@@ -2749,6 +2767,16 @@ el.ptr.addEventListener('pointermove', (e) => {
     return;
   }
   if (gesture && gesture.type === 'erase') { eraseAt(p.x, p.y); return; }
+  if (gesture && gesture.type === 'text' && gesture.hit) {
+    if (!gesture.moved && Math.hypot(p.x - gesture.p.x, p.y - gesture.p.y) < 5) return;
+    gesture.moved = true;
+    const t = xform();
+    gesture.hit.pts = [clamp(gesture.u0 + (p.x - gesture.p.x) / (t.W * t.s), 0, 1), clamp(gesture.v0 + (p.y - gesture.p.y) / (t.H * t.s), 0, 1)];
+    drawInk();
+    if (performance.now() - gesture.sent > 60) { gesture.sent = performance.now(); updateText(gesture.hit, {}); }
+    return;
+  }
+  if (!gesture && S.tool === 'text') el.ptr.style.cursor = textAt(p.x, p.y) ? 'move' : '';
   // ポインターはマウスを動かすだけで表示（タッチは触れている間）
   if (S.tool === 'laser' && (e.pointerType === 'mouse' || (gesture && gesture.type === 'laser'))) moveLaser(p);
 });
@@ -2767,53 +2795,132 @@ function flushStroke() {
 function finishStroke() { flushStroke(); gesture = null; }
 const inkWidth = (tool) => { const w = INK_WIDTHS[tool] || INK_WIDTHS.pen; return w[clamp(S.inkW[tool] | 0, 0, w.length - 1)]; };
 
-// 文字の書き込み：押したところに入力欄を出し、Enter（または欄の外を押す）で全員の画面に書く
-let textEd = null;
-function openTextInput(p) {
+// 文字の書き込み：押したところに入力欄を出して書く。書いた文字も、押すと選んで直せる（文字・大きさ・色）。ドラッグで移動
+//   Enter＝改行、「確定」か図面の別のところを押すと全員の画面に書く。Esc＝やめる
+let textEd = null;   // { box, ta, key, id（直すときの元の文字）, u, v, size, color }
+function textAt(x, y) {
+  if (!S.cur) return null;
+  const t = xform();
+  const sx = t.W * t.s, sy = t.H * t.s;
+  const list = S.strokes.get(S.cur.key) || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const st = list[i];
+    if (st.tool !== 'text') continue;
+    const b = textBox(ctx.ink, st, t.ox + st.pts[0] * sx, t.oy + st.pts[1] * sy, st.sw);
+    if (x > b.x - 6 && x < b.x + b.w + 6 && y > b.y - 6 && y < b.y + b.h + 6) return st;
+  }
+  return null;
+}
+function openTextInput(p, st = null) {
   commitText();
   if (!S.cur) return;
-  const { u, v } = toNorm(p.x, p.y);
-  const size = inkWidth('text');
-  const inp = document.createElement('input');
-  inp.className = 'text-input';
-  inp.maxLength = 300;
-  inp.enterKeyHint = 'done';
-  inp.placeholder = '文字を入力して Enter';
-  inp.setAttribute('aria-label', '書き込む文字');
-  inp.style.left = clamp(p.x, 0, Math.max(0, SW - 160)) + 'px';
-  inp.style.top = clamp(p.y - 4, 0, Math.max(0, SH - size * 1.6)) + 'px';
-  inp.style.fontSize = size + 'px';
-  inp.style.color = S.color;
-  el.stage.appendChild(inp);
-  textEd = { inp, key: S.cur.key, u, v, size, color: S.color };
-  inp.addEventListener('keydown', (e) => {
+  const { u, v } = st ? { u: st.pts[0], v: st.pts[1] } : toNorm(p.x, p.y);
+  if (st) { S.inkW.text = nearestWidth('text', st.sw); setColor(st.color); renderWidths(); }
+  const size = st ? st.sw : inkWidth('text');
+  const box = document.createElement('div');
+  box.className = 'text-ed';
+  const grip = document.createElement('span');
+  grip.className = 'text-grip'; grip.textContent = '✥ 移動'; grip.title = 'ドラッグで文字を移動';
+  const ta = document.createElement('textarea');
+  ta.className = 'text-input';
+  ta.maxLength = 1000; ta.rows = 1; ta.spellcheck = false;
+  ta.placeholder = '文字を入力（Enter で改行）';
+  ta.setAttribute('aria-label', '書き込む文字');
+  ta.value = st ? st.text : '';
+  const bar = document.createElement('span');
+  bar.className = 'text-bar';
+  const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = '確定'; ok.className = 'primary';
+  const del = document.createElement('button'); del.type = 'button'; del.textContent = st ? '削除' : 'やめる';
+  bar.append(grip, ok, del);
+  box.append(ta, bar);
+  el.stage.appendChild(box);
+  textEd = { box, ta, key: S.cur.key, id: st ? st.id : null, u, v, size, color: st ? st.color : S.color };
+  const fit = () => {
+    ta.style.fontSize = textEd.size + 'px';
+    ta.style.color = textEd.color;
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+    ctx.ink.save();
+    const w = textBox(ctx.ink, { text: ta.value || ta.placeholder }, 0, 0, textEd.size).w;
+    ctx.ink.restore();
+    ta.style.width = clamp(w + textEd.size, 120, Math.max(120, SW - 20)) + 'px';
+  };
+  textEd.fit = fit;
+  ta.addEventListener('input', fit);
+  ta.addEventListener('keydown', (e) => {
     e.stopPropagation();
-    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); commitText(); }
-    else if (e.key === 'Escape') { e.preventDefault(); commitText(true); }
+    if (e.key === 'Escape') { e.preventDefault(); commitText(true); }
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commitText(); }
   });
-  inp.addEventListener('blur', () => commitText());
-  inp.focus();
+  ok.addEventListener('click', () => commitText());
+  del.addEventListener('click', () => { const id = textEd && textEd.id; commitText(true); if (id) deleteStroke(id); });
+  // 入力中の文字の移動（つかんで動かす）
+  let drag = null;
+  grip.addEventListener('pointerdown', (e) => { e.preventDefault(); grip.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, u: textEd.u, v: textEd.v }; });
+  grip.addEventListener('pointermove', (e) => {
+    if (!drag || !textEd || !S.cur) return;
+    const t = xform();
+    textEd.u = clamp(drag.u + (e.clientX - drag.x) / (t.W * t.s), 0, 1);
+    textEd.v = clamp(drag.v + (e.clientY - drag.y) / (t.H * t.s), 0, 1);
+    placeTextEd();
+  });
+  const endDrag = () => { drag = null; if (textEd) textEd.ta.focus(); };
+  grip.addEventListener('pointerup', endDrag);
+  grip.addEventListener('pointercancel', endDrag);
+  fit();
+  placeTextEd();
+  drawInk(); // 直している元の文字は隠す
+  ta.focus();
+  if (st) ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+// 入力欄を、図面の上の文字の位置に合わせる（拡大・移動したときも）
+function placeTextEd() {
+  if (!textEd || !S.cur) return;
+  const t = xform();
+  textEd.box.style.left = t.ox + textEd.u * t.W * t.s - 4 + 'px';
+  textEd.box.style.top = t.oy + textEd.v * t.H * t.s - 4 + 'px';
 }
 function commitText(cancel = false) {
   if (!textEd) return;
-  const { inp, key, u, v, size, color } = textEd;
+  const { box, ta, key, id, u, v, size, color } = textEd;
   textEd = null;
-  const text = inp.value.trim().slice(0, 300);
-  inp.remove();
-  if (cancel || !text || (S.strokes.get(key) || []).length >= MAX_STROKES) return;
-  const cur = S.cur && S.cur.key === key ? S.cur : null;
-  const t = cur ? xform() : null;
+  const text = ta.value.replace(/\s+$/, '').replace(/^\n+/, '').slice(0, 1000);
+  box.remove();
+  const old = id && S.strokeById.get(id);
+  if (cancel) { if (old) drawInk(); return; }
+  if (old) {
+    if (!text.trim()) { deleteStroke(id); return; }
+    const prev = { text: old.text, sw: old.sw, color: old.color, pts: old.pts.slice() };
+    if (prev.text === text && prev.sw === size && prev.color === color && prev.pts[0] === u && prev.pts[1] === v) { drawInk(); return; }
+    updateText(old, { text, sw: size, color, pts: [u, v] });
+    S.myStack.push([key, id, prev]);
+    return;
+  }
+  if (!text.trim() || (S.strokes.get(key) || []).length >= MAX_STROKES) return;
+  const t = S.cur && S.cur.key === key ? xform() : null;
   const s = { id: rid(), tool: 'text', color, w: t ? Math.min(9, size / (t.W * t.s)) : 0.02, sw: size, text, pts: [clamp(u, 0, 1), clamp(v, 0, 1)] };
   addStroke(key, s);
   S.myStack.push([key, s.id]);
   send({ t: 'sb', key, s });
 }
+// 書いた文字を直す（全員の画面で同じ文字を書き換える）
+function updateText(st, ch, doSend = true) {
+  Object.assign(st, ch);
+  if (doSend) send({ t: 'tx', id: st.id, text: st.text, sw: st.sw, color: st.color, pts: st.pts });
+  if (S.cur && S.cur.key === st.key) drawInk();
+}
+const nearestWidth = (tool, w) => { const a = INK_WIDTHS[tool]; let k = 0; a.forEach((x, i) => { if (Math.abs(x - w) < Math.abs(a[k] - w)) k = i; }); return k; };
 
 function endPointer(e) {
   touches.delete(e.pointerId);
   if (!gesture) return;
   if (gesture.type === 'stroke') finishStroke();
-  else if (gesture.type === 'text') { if (e.type === 'pointerup') openTextInput(gesture.p); gesture = null; }
+  else if (gesture.type === 'text') {
+    const g = gesture;
+    gesture = null;
+    if (g.hit && g.moved) { updateText(g.hit, {}); S.myStack.push([g.hit.key, g.hit.id, { pts: [g.u0, g.v0] }]); }
+    else if (e.type === 'pointerup') openTextInput(g.p, g.hit && S.strokeById.has(g.hit.id) ? g.hit : null);
+  }
   else if (gesture.type === 'laser' && e.pointerType !== 'mouse') { S.pointers.delete('me'); send({ t: 'ptr-off' }); gesture = null; }
   else if (gesture.type === 'pinch') { if (touches.size < 2) gesture = null; }
   else gesture = null;
@@ -3201,7 +3308,9 @@ async function pollStats() {
 function setTool(t) {
   S.tool = t;
   $$('.tool-sel').forEach((b) => b.classList.toggle('on', b.dataset.tool === t));
-  el.stage.className = 'tool-' + t;
+  for (const c of [...el.stage.classList]) if (c.startsWith('tool-')) el.stage.classList.remove(c);
+  el.stage.classList.add('tool-' + t);
+  el.ptr.style.cursor = '';
   if (t !== 'laser' && S.pointers.has('me')) { S.pointers.delete('me'); send({ t: 'ptr-off' }); }
   if (t === 'hl' && S.color === '#222222') setColor(COLORS[0]); // 黒の蛍光ペンは見えにくい
   if (t === 'text' && S.color === COLORS[0]) setColor('#e53935'); // 黄色の文字は白い図面で読めない
@@ -3228,14 +3337,14 @@ function renderWidths() {
       S.inkW[tool] = i;
       store.set('inkW', S.inkW);
       if (S.tool !== tool) setTool(tool); else renderWidths();
-      if (textEd && tool === 'text') { textEd.size = inkWidth('text'); textEd.inp.style.fontSize = textEd.size + 'px'; textEd.inp.focus(); }
+      if (textEd && tool === 'text') { textEd.size = inkWidth('text'); textEd.fit(); textEd.ta.focus(); }
     });
     box.appendChild(b);
   });
 }
 function setColor(c) {
   S.color = c;
-  if (textEd) { textEd.color = c; textEd.inp.style.color = c; }
+  if (textEd) { textEd.color = c; textEd.fit(); }
   $$('.swatch').forEach((b) => b.classList.toggle('on', b.dataset.color === c));
 }
 function updateToolbar() {
@@ -3245,11 +3354,7 @@ function updateToolbar() {
   el.pageText.textContent = isPdf ? `${c.page} / ${doc.pages}` : doc ? '1 / 1' : c.type === 'live' ? (c.screen ? '画面' : 'カメラ') : '-';
   $('#prevBtn').disabled = !isPdf || c.page <= 1;
   $('#nextBtn').disabled = !isPdf || c.page >= doc.pages;
-  // 全画面のときの「前のページ・次のページ」（ページが2枚以上の図面だけ）
-  $('#fullNav').hidden = !el.room.classList.contains('full') || !isPdf || doc.pages < 2;
-  $('#fullPage').textContent = el.pageText.textContent;
-  $('#fullPrevBtn').disabled = $('#prevBtn').disabled;
-  $('#fullNextBtn').disabled = $('#nextBtn').disabled;
+  el.stage.classList.toggle('no-content', !S.cur); // 何も映していないときは、黒い画面でもカーソルを出す
   $('#liveRemoteBtn').classList.toggle('on', c.type === 'live' && !isMeWho(c.who) && !c.screen);
   $('#liveSelfBtn').classList.toggle('on', c.type === 'live' && isMeWho(c.who) && !c.screen);
   const sb = $('#shareBtn');
@@ -3463,7 +3568,7 @@ function setupToolbar() {
     b.dataset.color = c;
     b.style.background = c;
     b.title = '色';
-    b.addEventListener('click', () => { setColor(c); if (S.tool !== 'hl' && S.tool !== 'pen' && S.tool !== 'text') setTool('pen'); if (textEd) textEd.inp.focus(); });
+    b.addEventListener('click', () => { setColor(c); if (S.tool !== 'hl' && S.tool !== 'pen' && S.tool !== 'text') setTool('pen'); if (textEd) textEd.ta.focus(); });
     sw.appendChild(b);
   }
   setColor(S.color);
@@ -3474,8 +3579,31 @@ function setupToolbar() {
   el.fileInput.addEventListener('change', () => { const fs = Array.from(el.fileInput.files || []); el.fileInput.value = ''; if (fs.length) openLocalFiles(fs); });
   $('#prevBtn').addEventListener('click', () => gotoPage(-1));
   $('#nextBtn').addEventListener('click', () => gotoPage(1));
-  $('#fullPrevBtn').addEventListener('click', () => gotoPage(-1));
-  $('#fullNextBtn').addEventListener('click', () => gotoPage(1));
+  // 全画面のときの道具のパレット：たたむ・ドラッグで移動
+  $('#palFoldBtn').addEventListener('click', () => {
+    const f = !$('#sideTools').classList.contains('folded');
+    $('#sideTools').classList.toggle('folded', f);
+    $('#palFoldBtn').textContent = f ? 'ひらく' : 'たたむ';
+  });
+  {
+    const pal = $('#sideTools'), grip = $('#palGrip');
+    let drag = null;
+    grip.addEventListener('pointerdown', (e) => {
+      if (!el.room.classList.contains('full')) return;
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      const r = pal.getBoundingClientRect();
+      drag = { x: e.clientX, y: e.clientY, l: r.left, t: r.top };
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      pal.style.left = clamp(drag.l + e.clientX - drag.x, 0, innerWidth - pal.offsetWidth) + 'px';
+      pal.style.top = clamp(drag.t + e.clientY - drag.y, 0, innerHeight - 40) + 'px';
+    });
+    const end = () => { drag = null; };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  }
   $('#zoomInBtn').addEventListener('click', () => zoomAt(SW / 2, SH / 2, 1.4));
   $('#zoomOutBtn').addEventListener('click', () => zoomAt(SW / 2, SH / 2, 1 / 1.4));
   $('#fitBtn').addEventListener('click', () => { S.view = { cx: 0.5, cy: 0.5, zoom: 1 }; viewChanged(); });
